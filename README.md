@@ -8,15 +8,15 @@ An enterprise-grade bug intelligence platform that connects GitHub Actions CI pi
 
 ## Demo
 
-> **Watch the full workflow:** [demo.mov](docs/demo.mov)
->
 > Describing a bug in plain English → AI structures it → Playwright verifies it on the live app → pushed to Jira with screenshots attached.
 
 **Report a Bug — plain English → AI-structured Jira ticket**
 
 ![Report a Bug](docs/report-bug.png)
 
-**Live Jira Bug Tracker — colour-coded by priority, synced live**
+> **Watch the full workflow:** [demo.mov](docs/demo.mov)
+> 
+**Live Jira Bug Tracker — color-coded by priority, synced live**
 
 ![Jira Tracker](docs/jira-tracker.png)
 
