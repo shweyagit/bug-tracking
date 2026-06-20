@@ -1,0 +1,42 @@
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Database
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Queue
+arq==0.25.0
+redis==5.0.4
+
+# HTTP client
+httpx==0.27.0
+
+# XML parsing
+junitparser==3.2.0
+
+# AI
+anthropic==0.28.0
+
+# Browser automation
+playwright==1.44.0
+
+# Dashboard
+streamlit==1.35.0
+pandas==2.2.2
+plotly==5.22.0
+
+# Config & validation
+pydantic==2.7.1
+pydantic-settings==2.3.0
+python-dotenv==1.0.1
+
+# Security
+python-jose==3.3.0
+
+# Utilities
+tenacity==8.3.0
+structlog==24.2.0
