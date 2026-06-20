@@ -14,7 +14,7 @@ An enterprise-grade bug intelligence platform that connects GitHub Actions CI pi
 
 ![Report a Bug](docs/report-bug.png)
 
-> **Watch the full workflow:** [demo.mov](docs/demo.mov)
+> **Watch the full workflow:** [demo.mov](docs/demo.mp4)
 > 
 **Live Jira Bug Tracker — color-coded by priority, synced live**
 
