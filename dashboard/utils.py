@@ -7,11 +7,10 @@ from pathlib import Path
 
 import httpx
 import streamlit as st
-from PIL import Image
 
 ASSETS = Path(__file__).parent / "assets"
 LOGO   = str(ASSETS / "logo.png")
-ICON   = Image.open(ASSETS / "favicon.png")
+ICON   = str(ASSETS / "favicon.png")
 
 
 @st.cache_data
