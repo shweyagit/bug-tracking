@@ -64,3 +64,12 @@ col1.metric("Draft Bugs", drafts, help="AI-generated bug reports awaiting review
 col2.metric("Open Bugs", open_bugs, help="Bugs pushed to Jira and still open")
 col3.metric("Failed Runs (All Time)", failed_runs)
 col4.metric("Test Failures (Last 7 Days)", recent_failures)
+
+if all(v == 0 for v in [drafts, open_bugs, failed_runs, recent_failures]):
+    st.info(
+        "No data yet — this is normal on first run.\n\n"
+        "**To get started:**\n"
+        "- Go to **Report Bug** to manually file a bug and push it to Jira\n"
+        "- Connect your GitHub Actions to the webhook to auto-capture CI failures\n"
+        "- Use **Jira Tracker** to browse existing bugs from your Jira board"
+    )

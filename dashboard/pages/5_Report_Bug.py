@@ -37,8 +37,8 @@ def _verify_bug_on_app(bug: dict):
             )
             resp.raise_for_status()
             data = resp.json()
-        except Exception as e:
-            st.error(f"Verification service not reachable: {e}\n\nMake sure you have started it with:\n```\npython verify_service.py\n```")
+        except Exception:
+            st.warning("Local Agent not reachable — skipping verification. Bug will be pushed without screenshots.")
             return
 
     # Convert response into session state format
@@ -60,6 +60,7 @@ def _verify_bug_on_app(bug: dict):
             self.console_errors = d["console_errors"]
             self.failing_step = d["failing_step"]
             self.reproduction_url = d["reproduction_url"]
+            self.trace_b64 = d.get("trace_b64", "")
 
     result = _Result(data)
     st.session_state["verification_result"] = result
@@ -73,6 +74,14 @@ def _verify_bug_on_app(bug: dict):
                 "bytes": img_bytes,
                 "type": "image/png",
             })
+
+    if data.get("trace_b64"):
+        auto_attachments.append({
+            "name": "playwright_trace.zip",
+            "bytes": base64.b64decode(data["trace_b64"]),
+            "type": "application/zip",
+        })
+
     st.session_state["auto_screenshots"] = auto_attachments
 
 
@@ -138,6 +147,7 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
     def _code(text):
         return {"type": "codeBlock", "attrs": {"language": "text"}, "content": [{"type": "text", "text": text}]}
 
+    reporter_name = st.session_state.get("reporter_name", "").strip() or "Bug Tracking Agent"
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(bug.get("steps_to_reproduce", [])))
 
     content = [
@@ -151,7 +161,27 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
         _p(bug["actual_behaviour"]),
         _h("Affected Feature"),
         _p(bug["affected_feature"]),
+        _h("Filed By"),
+        _p(f"{reporter_name} · via Bug Tracking Agent"),
     ]
+
+    # Include API details if provided (API bug tickets get environment first)
+    api_details = st.session_state.get("api_details")
+    if api_details:
+        content.insert(0, _p(f"Environment: {api_details.get('env', 'Unknown')}"))
+        content.insert(0, _h("Environment"))
+        method_endpoint = f"{api_details.get('method', '')} {api_details.get('endpoint', '')}".strip()
+        content.append(_h("API Evidence"))
+        if method_endpoint:
+            content.append(_p(f"Endpoint: {method_endpoint}"))
+        if api_details.get("request"):
+            content.append(_p("Request body:"))
+            content.append(_code(api_details["request"]))
+        if api_details.get("status"):
+            content.append(_p(f"Response status: {api_details['status']}"))
+        if api_details.get("response"):
+            content.append(_p("Response body:"))
+            content.append(_code(api_details["response"]))
 
     # Include verification result if available
     if verification:
@@ -206,50 +236,129 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
             "X-Atlassian-Token": "no-check",
         }
 
-        # User-uploaded attachments
-        if attachments:
-            for f in attachments:
-                with st.spinner(f"Attaching {f.name}..."):
-                    file_bytes = f.read()
-                    attach_resp = httpx.post(
-                        f"{jira_url}/rest/api/3/issue/{ticket_key}/attachments",
-                        headers=attach_headers,
-                        files={"file": (f.name, file_bytes, f.type)},
-                        timeout=60,
-                    )
-                    attach_resp.raise_for_status()
+        def _attach(name, data_bytes, mime):
+            try:
+                r = httpx.post(
+                    f"{jira_url}/rest/api/3/issue/{ticket_key}/attachments",
+                    headers=attach_headers,
+                    files={"file": (name, bytes(data_bytes), mime)},
+                    timeout=60,
+                )
+                r.raise_for_status()
+            except Exception as exc:
+                st.warning(f"Could not attach {name}: {exc}")
 
-        # Auto-captured verification screenshots
-        auto_screenshots = st.session_state.get("auto_screenshots", [])
-        if auto_screenshots:
-            for sc in auto_screenshots:
-                with st.spinner(f"Attaching {sc['name']}..."):
-                    attach_resp = httpx.post(
-                        f"{jira_url}/rest/api/3/issue/{ticket_key}/attachments",
-                        headers=attach_headers,
-                        files={"file": (sc["name"], sc["bytes"], sc["type"])},
-                        timeout=60,
-                    )
-                    attach_resp.raise_for_status()
+        # User-uploaded attachments
+        for f in (attachments or []):
+            with st.spinner(f"Attaching {f.name}..."):
+                _attach(f.name, f.read(), f.type)
+
+        # Auto-captured replay screenshots + trace
+        for sc in st.session_state.get("auto_screenshots", []):
+            with st.spinner(f"Attaching {sc['name']}..."):
+                _attach(sc["name"], sc["bytes"], sc["type"])
 
         st.success(f"Ticket created: [{ticket_key}]({ticket_url})")
         st.markdown(f"**[Open in Jira]({ticket_url})**")
 
-        del st.session_state["generated_bug"]
-        if "attachments" in st.session_state:
-            del st.session_state["attachments"]
+        for key in ["generated_bug", "attachments", "verification_result",
+                    "auto_screenshots", "api_details", "recorded_steps"]:
+            st.session_state.pop(key, None)
 
     except Exception as e:
         st.error(f"Failed to push to Jira: {e}")
 
 
+# ── Record Steps via Playwright Codegen ───────────────────────────────────────
+def _record_steps():
+    verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+    try:
+        resp = httpx.post(f"{verify_url}/record/start", timeout=10)
+        resp.raise_for_status()
+        st.session_state["recording"] = True
+        st.info("Browser opened on your machine — reproduce the bug, then close the browser.")
+    except Exception as e:
+        st.error(f"Could not start recording: {e}\n\nMake sure verify_service.py is running.")
+
+
+def _finish_recording():
+    verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+    try:
+        status = httpx.get(f"{verify_url}/record/status", timeout=5).json()
+        if status.get("status") == "recording":
+            st.warning("Still recording — close the browser first.")
+            return
+
+        with st.spinner("Converting steps and replaying to capture screenshots + trace..."):
+            resp = httpx.get(f"{verify_url}/record/finish", timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+
+        steps = data.get("steps", [])
+        if not steps:
+            st.error(f"Could not convert steps: {data.get('error', 'Unknown error')}")
+            return
+
+        st.session_state["recorded_steps"] = steps
+        st.session_state["recording"] = False
+
+        # Store trace so it attaches to Jira automatically
+        if data.get("trace_b64"):
+            st.session_state["auto_screenshots"] = [{
+                "name": "playwright_trace.zip",
+                "bytes": base64.b64decode(data["trace_b64"]),
+                "type": "application/zip",
+            }]
+            st.success(f"Recorded {len(steps)} steps + Playwright trace captured — will attach to Jira automatically.")
+        else:
+            st.success(f"Recorded {len(steps)} steps — trace unavailable (verify service may be offline).")
+    except Exception as e:
+        st.error(f"Failed to finish recording: {e}")
+
+
 # ── Page ──────────────────────────────────────────────────────────────────────
 st.title("Report a Bug")
-st.markdown("Describe the bug in plain English — the AI will structure it into a proper ticket.")
+st.markdown("Choose the bug type — UI bugs are verified on the browser, API bugs go straight to Jira with full request/response evidence.")
 
-# ── Input Form ────────────────────────────────────────────────────────────────
-with st.form("bug_form"):
-    description = st.text_area(
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab_ui, tab_api = st.tabs(["UI Bug", "API Bug"])
+
+# ── UI Bug Tab ────────────────────────────────────────────────────────────────
+with tab_ui:
+    with st.expander("Record reproduction steps on your app (recommended)", expanded=False):
+        st.markdown(
+            "Opens a browser on your machine via Playwright. Reproduce the bug, "
+            "close the browser, and the steps will be auto-populated in the form."
+        )
+        st.info(
+            "A **Playwright trace** (screenshots at every action + full network log) "
+            "will be captured automatically and attached to the Jira ticket — "
+            "no extra steps needed. Open it at [trace.playwright.dev](https://trace.playwright.dev) to replay the bug.",
+            icon="ℹ️",
+        )
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            if st.button("Record Steps", type="secondary", use_container_width=True):
+                _record_steps()
+        with rc2:
+            if st.button("Finish Recording", type="secondary", use_container_width=True):
+                _finish_recording()
+
+        if st.session_state.get("recorded_steps"):
+            st.markdown("**Recorded steps** — edit or remove any step:")
+            updated_steps = []
+            for i, step in enumerate(st.session_state["recorded_steps"]):
+                col_txt, col_del = st.columns([10, 1])
+                with col_txt:
+                    edited = st.text_input(f"Step {i+1}", value=step, key=f"rec_step_{i}", label_visibility="collapsed")
+                with col_del:
+                    remove = st.button("✕", key=f"rec_del_{i}", help="Remove this step")
+                if not remove:
+                    updated_steps.append(edited)
+            st.session_state["recorded_steps"] = [s for s in updated_steps if s.strip()]
+
+    st.markdown("**Describe the bug** <span style='color:red'>\\*</span>", unsafe_allow_html=True)
+    ui_description = st.text_area(
         "Describe the bug",
         height=150,
         placeholder=(
@@ -257,42 +366,171 @@ with st.form("bug_form"):
             "password once, the login button becomes unresponsive and I have to "
             "refresh the page to try again."
         ),
+        key="ui_description",
+        label_visibility="collapsed",
     )
+    ui_project = st.text_input("Project / Product", value=os.getenv("PROJECT_NAME", "SportIQ"), key="ui_project")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        project = st.text_input("Project / Product", value=os.getenv("PROJECT_NAME", "SportIQ"))
-    with col2:
-        reporter = st.text_input("Your name", placeholder="e.g. Jane Smith")
-
-    attachments = st.file_uploader(
-        "Attach screenshot, screen recording or zip bundle (optional)",
+    st.file_uploader(
+        "Attach files — drag & drop or click to browse (screenshots, recordings, zips)",
         type=["png", "jpg", "jpeg", "gif", "mp4", "mov", "webm", "zip"],
         accept_multiple_files=True,
+        key="ui_attachments",
+        help="Drag and drop any supporting evidence here. All files will be attached to the Jira ticket.",
+    )
+    st.caption("Tip: drag and drop multiple files at once for quicker upload.")
+
+    st.markdown("---")
+    st.markdown("**Your Name**")
+    st.text_input(
+        "your_name_ui",
+        value=st.session_state.get("reporter_name", ""),
+        placeholder="e.g. Jane Smith",
+        label_visibility="collapsed",
+        key="reporter_name",
+    )
+    ui_submitted = st.button("Draft Bug Ticket", type="primary", key="ui_submit")
+
+# ── API Bug Tab ───────────────────────────────────────────────────────────────
+with tab_api:
+    st.markdown("Fill in the API evidence — the AI will structure a developer-ready ticket with curl steps and full request/response.")
+
+    # ── Newman Import ──────────────────────────────────────────────────────────
+    with st.expander("Run API tests — auto-detect failures (recommended)", expanded=False):
+        st.markdown(
+            "Runs the built-in SportIQ API test suite via Newman. "
+            "Any failing request appears below — click **Draft** to turn it into a structured Jira ticket instantly."
+        )
+
+        if st.button("Run API Tests", type="secondary", key="newman_run"):
+            verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+            with st.spinner("Running API tests against SportIQ... this takes ~2 minutes"):
+                try:
+                    resp = httpx.post(f"{verify_url}/run-newman", timeout=300)
+                    resp.raise_for_status()
+                    st.session_state["newman_results"] = resp.json()
+                except Exception as e:
+                    st.error(f"Could not run tests: {e}\n\nMake sure verify_service.py is running.")
+
+        results = st.session_state.get("newman_results")
+        if results:
+            total = results.get("total_requests", 0)
+            failed_a = results.get("failed_assertions", 0)
+            total_a = results.get("total_assertions", 0)
+            st.caption(f"{total} requests · {total_a - failed_a}/{total_a} assertions passed")
+
+            failures = results.get("failures", [])
+            if not failures:
+                st.success("All tests passed — no failures to report.")
+            else:
+                st.warning(f"**{len(failures)} failing request(s) found:**")
+                for idx, f in enumerate(failures):
+                    col_info, col_btn = st.columns([8, 2])
+                    with col_info:
+                        st.markdown(
+                            f"**{f['method']} {f['url']}**  \n"
+                            f"`{f['name']}` — _{f['assertion_errors']}_"
+                        )
+                    with col_btn:
+                        if st.button("Draft", key=f"newman_draft_{idx}", type="secondary"):
+                            st.session_state["newman_prefill"] = f
+
+    # Pre-fill form from Newman selection
+    _pf = st.session_state.pop("newman_prefill", None)
+
+    # Default values (overridden by Newman prefill if set)
+    _method_opts = ["POST", "GET", "PUT", "PATCH", "DELETE"]
+    _def_method = _pf["method"] if _pf and _pf["method"] in _method_opts else "POST"
+    _def_endpoint = _pf["url"] if _pf else ""
+    _def_req = _pf["req_body"] if _pf else ""
+    _def_status = _pf["status"] if _pf else ""
+    _def_resp = _pf["resp_body"] if _pf else ""
+    _def_ctx = f"Assertion errors: {_pf['assertion_errors']}\nTest name: {_pf['name']}" if _pf else ""
+
+    if _pf:
+        st.info(f"Pre-filled from Newman: **{_pf['method']} {_pf['url']}**")
+
+    api_env_col, api_method_col, api_endpoint_col = st.columns([2, 1, 3])
+    with api_env_col:
+        api_env = st.selectbox(
+            "Environment *",
+            ["Production", "Staging", "Development", "Local"],
+            key="api_env",
+        )
+    with api_method_col:
+        api_method = st.selectbox("Method *", _method_opts,
+                                  index=_method_opts.index(_def_method), key="api_method")
+    with api_endpoint_col:
+        api_endpoint = st.text_input("Endpoint *", value=_def_endpoint,
+                                     placeholder="e.g. /api/v1/analyse", key="api_endpoint")
+
+    api_request = st.text_area(
+        "Request body",
+        value=_def_req,
+        height=80,
+        placeholder='e.g. {"query": "messi vs ronaldo"}',
+        key="api_request",
     )
 
-    submitted = st.form_submit_button("Generate Bug Report", type="primary")
+    api_status_col, api_ct_col = st.columns([1, 3])
+    with api_status_col:
+        api_status = st.text_input("Response status *", value=_def_status,
+                                   placeholder="e.g. 500", key="api_status")
+    with api_ct_col:
+        api_content_type = st.text_input("Response content-type",
+                                         placeholder="e.g. application/json", key="api_content_type")
 
-# ── AI Analysis ───────────────────────────────────────────────────────────────
-if submitted:
-    if not description.strip():
+    api_response = st.text_area(
+        "Response body",
+        value=_def_resp,
+        height=80,
+        placeholder='e.g. {"error": "OpenAI timeout after 30s"}',
+        key="api_response",
+    )
+    api_description = st.text_area(
+        "Additional context (optional)",
+        value=_def_ctx,
+        height=80,
+        placeholder="e.g. This only happens on the first request after a cold start.",
+        key="api_description",
+    )
+    api_project = st.text_input("Project / Product", value=os.getenv("PROJECT_NAME", "SportIQ"), key="api_project")
+
+    st.markdown("---")
+    st.markdown("**Your Name**")
+    st.text_input(
+        "your_name_api",
+        value=st.session_state.get("reporter_name", ""),
+        placeholder="e.g. Jane Smith",
+        label_visibility="collapsed",
+        key="reporter_name_api",
+    )
+    api_submitted = st.button("Draft Bug Ticket", type="primary", key="api_submit")
+
+# ── UI Bug AI Analysis ────────────────────────────────────────────────────────
+if ui_submitted:
+    ui_desc = st.session_state.get("ui_description", "")
+    if not ui_desc.strip():
         st.error("Please describe the bug first.")
         st.stop()
 
     with st.spinner("Analysing with AI..."):
         try:
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            recorded_steps = st.session_state.get("recorded_steps", [])
+            steps_context = ""
+            if recorded_steps:
+                steps_context = "\n\nRecorded reproduction steps (use these exactly as steps_to_reproduce):\n" + \
+                    "\n".join(f"{i+1}. {s}" for i, s in enumerate(recorded_steps))
 
-            prompt = f"""You are a senior QA engineer. A team member has reported a bug in plain English.
-Convert it into a structured, professional bug report.
+            prompt = f"""You are a senior QA engineer. Convert this UI bug report into a structured ticket.
 
-Bug description from team member:
-\"\"\"{description}\"\"\"
+Bug description: \"\"\"{ui_desc}\"\"\"
+Project: {st.session_state.get("ui_project", "")}
+Reporter: {st.session_state.get("reporter_name", "") or "Team member"}
+{steps_context}
 
-Project: {project}
-Reporter: {reporter or "Team member"}
-
-Respond ONLY with valid JSON in this exact schema:
+Respond ONLY with valid JSON:
 {{
   "title": "short, clear bug title (max 100 chars)",
   "description": "clear description of the bug and its impact",
@@ -305,31 +543,109 @@ Respond ONLY with valid JSON in this exact schema:
 }}
 
 Rules:
-- steps_to_reproduce must be CONCRETE INTERACTION steps a browser automation tool can execute
-- Every step must be an ACTION: navigate to URL, click a button, type text, select option
-- NEVER use passive steps like "observe", "notice", "see", "check" — only actions
-- Always include the step that TRIGGERS the bug (e.g. "Type 'messi vs ronaldo' in the search field and click ANALYSE")
-- Last step should be the action that exposes the bug, not an observation
-- priority: critical=data loss/app crash, high=major feature broken, medium=degraded UX, low=minor/cosmetic
-- labels: use kebab-case, max 3 labels
-- Keep everything concise and actionable"""
+- If recorded steps provided, use them exactly — do not invent steps
+- Every step must be a concrete ACTION (navigate, click, type, select)
+- NEVER use passive steps like "observe", "notice", "see", "check"
+- Include the step that TRIGGERS the bug
+- priority: critical=data loss/crash, high=major feature broken, medium=degraded UX, low=cosmetic
+- labels: kebab-case, max 3"""
 
             message = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
-
             raw = message.content[0].text.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
             bug = json.loads(raw.strip())
+            bug["_type"] = "ui"
             st.session_state["generated_bug"] = bug
-            st.session_state["attachments"] = attachments
-            st.session_state["reporter"] = reporter
+            st.session_state["attachments"] = st.session_state.get("ui_attachments") or []
+        except Exception as e:
+            st.error(f"AI analysis failed: {e}")
+            st.stop()
 
+# ── API Bug AI Analysis ───────────────────────────────────────────────────────
+if api_submitted:
+    # sync api name field into shared reporter_name
+    if st.session_state.get("reporter_name_api"):
+        st.session_state["reporter_name"] = st.session_state["reporter_name_api"]
+    api_ep = st.session_state.get("api_endpoint", "").strip()
+    api_st = st.session_state.get("api_status", "").strip()
+    api_en = st.session_state.get("api_env", "Production")
+    if not api_ep:
+        st.error("Endpoint is required.")
+        st.stop()
+    if not api_st:
+        st.error("Response status is required.")
+        st.stop()
+
+    with st.spinner("Analysing with AI..."):
+        try:
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            meth = st.session_state.get("api_method", "POST")
+            req_body = st.session_state.get("api_request", "")
+            resp_body = st.session_state.get("api_response", "")
+            extra = st.session_state.get("api_description", "")
+
+            prompt = f"""You are a senior QA engineer creating a bug ticket for an API failure.
+
+Environment: {api_en}
+Endpoint: {meth} {api_ep}
+Request body: {req_body or "N/A"}
+Response status: {api_st}
+Response body: {resp_body or "N/A"}
+Additional context: {extra or "None"}
+
+Project: {st.session_state.get("api_project", "")}
+Reporter: {st.session_state.get("reporter_name", "") or "Team member"}
+
+Respond ONLY with valid JSON:
+{{
+  "title": "HTTP method + endpoint path + status code, max 100 chars (e.g. POST /api/v1/analyse returns 500)",
+  "description": "Precise description including environment, what was called, and what error occurred",
+  "steps_to_reproduce": ["curl or API client steps to reproduce"],
+  "expected_behaviour": "Expected HTTP status and response",
+  "actual_behaviour": "Actual HTTP status and exact error returned",
+  "priority": "critical|high|medium|low",
+  "labels": ["api", "environment-label", "optional-third"],
+  "affected_feature": "API endpoint or service name"
+}}
+
+Rules:
+- Title MUST follow pattern: "METHOD /path returns STATUS"
+- steps_to_reproduce must be curl commands or Postman-style steps with exact request body
+- labels must include "api" and the environment in kebab-case (e.g. "production", "staging")
+- If environment is Production, default priority to high or critical
+- actual_behaviour must quote the exact error message from the response body
+- priority: critical=production down/data loss, high=production degraded, medium=non-prod, low=cosmetic"""
+
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            bug = json.loads(raw.strip())
+            bug["_type"] = "api"
+            bug["_env"] = api_en
+            st.session_state["generated_bug"] = bug
+            st.session_state["attachments"] = []
+            st.session_state["api_details"] = {
+                "env": api_en,
+                "method": meth,
+                "endpoint": api_ep,
+                "request": req_body,
+                "status": api_st,
+                "response": resp_body,
+            }
         except Exception as e:
             st.error(f"AI analysis failed: {e}")
             st.stop()
@@ -337,10 +653,10 @@ Rules:
 # ── Review & Edit ─────────────────────────────────────────────────────────────
 if "generated_bug" in st.session_state:
     bug = st.session_state["generated_bug"]
+    bug_type = bug.get("_type", "ui")
 
     st.divider()
     st.subheader("Review & Edit Bug Report")
-    st.markdown("Edit any field before pushing to Jira.")
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -352,37 +668,42 @@ if "generated_bug" in st.session_state:
             index=["critical", "high", "medium", "low"].index(bug.get("priority", "medium")),
         )
 
+    if bug_type == "api":
+        api_details = st.session_state.get("api_details", {})
+        env_options = ["Production", "Staging", "Development", "Local"]
+        current_env = api_details.get("env", "Production")
+        env_idx = env_options.index(current_env) if current_env in env_options else 0
+        new_env = st.selectbox("Environment *", env_options, index=env_idx, key="review_env")
+        api_details["env"] = new_env
+        bug["_env"] = new_env
+        st.session_state["api_details"] = api_details
+
     bug["description"] = st.text_area("Description", value=bug["description"], height=100)
 
     st.markdown("**Steps to Reproduce**")
     steps = bug.get("steps_to_reproduce", [])
     new_steps = []
     for i, step in enumerate(steps):
-        edited = st.text_input(f"Step {i+1}", value=step, key=f"step_{i}")
-        new_steps.append(edited)
-
+        col_s, col_d = st.columns([11, 1])
+        with col_s:
+            edited = st.text_input(f"Step {i+1}", value=step, key=f"step_{i}", label_visibility="collapsed")
+        with col_d:
+            remove = st.button("✕", key=f"del_step_{i}", help="Remove step")
+        if not remove:
+            new_steps.append(edited)
     if st.button("+ Add step"):
         new_steps.append("")
     bug["steps_to_reproduce"] = [s for s in new_steps if s.strip()]
 
     col3, col4 = st.columns(2)
     with col3:
-        bug["expected_behaviour"] = st.text_area(
-            "Expected Behaviour", value=bug["expected_behaviour"], height=80
-        )
+        bug["expected_behaviour"] = st.text_area("Expected Behaviour", value=bug["expected_behaviour"], height=80)
     with col4:
-        bug["actual_behaviour"] = st.text_area(
-            "Actual Behaviour", value=bug["actual_behaviour"], height=80
-        )
+        bug["actual_behaviour"] = st.text_area("Actual Behaviour", value=bug["actual_behaviour"], height=80)
 
-    labels_str = st.text_input(
-        "Labels (comma-separated)", value=", ".join(bug.get("labels", []))
-    )
+    labels_str = st.text_input("Labels (comma-separated)", value=", ".join(bug.get("labels", [])))
     bug["labels"] = [l.strip() for l in labels_str.split(",") if l.strip()]
-
-    bug["affected_feature"] = st.text_input(
-        "Affected Feature", value=bug.get("affected_feature", "")
-    )
+    bug["affected_feature"] = st.text_input("Affected Feature", value=bug.get("affected_feature", ""))
 
     attachments = st.session_state.get("attachments", [])
     if attachments:
@@ -392,22 +713,12 @@ if "generated_bug" in st.session_state:
                 st.image(f, caption=f.name, width=300)
             elif f.type.startswith("video"):
                 st.video(f)
-            elif f.name.endswith(".zip") or f.type == "application/zip":
-                st.markdown(f"📦 `{f.name}` — zip bundle ({round(f.size/1024, 1)} KB)")
             else:
                 st.markdown(f"- `{f.name}` ({f.type})")
 
     st.divider()
-    col_verify, col_push = st.columns([1, 1])
+    if st.button("Push to Jira", type="primary"):
+        _push_manual_bug_to_jira(bug, attachments)
 
-    with col_verify:
-        if st.button("Verify Bug on App", type="secondary"):
-            _verify_bug_on_app(bug)
-
-    with col_push:
-        if st.button("Push to Jira", type="primary"):
-            _push_manual_bug_to_jira(bug, attachments)
-
-    # Show verification results if available
     if "verification_result" in st.session_state:
         _show_verification_result(st.session_state["verification_result"])

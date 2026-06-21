@@ -3,15 +3,19 @@ Lightweight local verification service.
 Runs on the HOST machine (not in Docker) so Playwright can reach localhost:3000 directly.
 Start with: python3 verify_service.py
 """
+from __future__ import annotations
+
 import base64
 import json
 import logging
 import os
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -22,6 +26,7 @@ log = logging.getLogger(__name__)
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 
 APP_URL = os.getenv("APP_URL_LOCAL", "http://localhost:3000")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -40,9 +45,23 @@ log.info(f"APP_URL: {APP_URL}")
 log.info(f"ANTHROPIC_API_KEY loaded: {'yes' if ANTHROPIC_API_KEY else 'NO - MISSING'}")
 
 
+_VERCEL_STORAGE_STATE = None
+
+def _bypass_headers() -> dict:
+    return {}
+
+def _add_bypass(url: str) -> str:
+    return url
+
+
 class VerifyRequest(BaseModel):
     steps: list[str]
     description: str
+
+
+class ElementScreenshotRequest(BaseModel):
+    url: str
+    selector: str = ""
 
 
 ACTION_PROMPT = """You are controlling a web browser to reproduce a bug.
@@ -148,6 +167,8 @@ def _get_action(page, step: str) -> dict:
         return {"action": "wait", "description": step}
 
 
+
+
 def _execute_action(page, action: dict) -> bool:
     log.info(f"Executing: {action.get('action')} selector={action.get('selector')} value={action.get('value','')[:40]}")
     try:
@@ -157,8 +178,9 @@ def _execute_action(page, action: dict) -> bool:
 
         if act == "navigate":
             url = value if value.startswith("http") else f"{APP_URL.rstrip('/')}/{value.lstrip('/')}"
-            if page.url.rstrip("/") != url.rstrip("/"):
-                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            url = _add_bypass(url)
+            if page.url.split("?")[0].rstrip("/") != url.split("?")[0].rstrip("/"):
+                page.goto(url, wait_until="networkidle", timeout=30000)
         elif act == "click":
             page.locator(selector).first.click(timeout=5000)
         elif act == "type":
@@ -251,6 +273,179 @@ def _observe(page, step: str, action_desc: str, network_logs: list[dict], consol
         return {"success": False, "observation": str(e), "bug_signs": None, "screenshot_b64": fallback_png, "failed_requests": []}
 
 
+def _replay_with_trace(code: str) -> str:
+    """
+    Extract page.* action lines from the codegen script and replay them
+    in a fresh Playwright session with tracing. Uses try/finally so the
+    trace is always saved even if a step fails mid-way.
+    """
+    if not code.strip():
+        return ""
+
+    # Pull out every page.* action line (preserving original selectors/values)
+    page_actions = []
+    for line in code.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("page.") and not stripped.startswith("page.wait_for_timeout"):
+            page_actions.append(f"        {stripped}")
+
+    if not page_actions:
+        log.warning("No page.* actions found in codegen output")
+        return ""
+
+    trace_path = tempfile.mktemp(suffix=".zip")
+
+    # Build a clean script: our own Playwright session + tracing + try/finally
+    action_block = "\n".join(
+        f"        try:\n            {a.strip()}\n        except Exception as _e:\n            print(f'Step skipped: {{_e}}')"
+        for a in page_actions
+    )
+
+    script = f"""
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context(viewport={{"width": 1280, "height": 800}})
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    page = context.new_page()
+    try:
+{action_block}
+    except Exception as e:
+        print(f"Replay error: {{e}}")
+    finally:
+        context.tracing.stop(path={repr(trace_path)})
+    context.close()
+    browser.close()
+"""
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+    tmp.write(script)
+    tmp.close()
+
+    try:
+        result = subprocess.run(
+            ["python3", tmp.name],
+            timeout=180,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            log.info(f"Trace replay output: {result.stdout[:300]}")
+        if result.returncode != 0:
+            log.warning(f"Trace replay stderr: {result.stderr[:300]}")
+
+        if Path(trace_path).exists():
+            data = base64.b64encode(Path(trace_path).read_bytes()).decode()
+            Path(trace_path).unlink(missing_ok=True)
+            log.info(f"Trace captured — {len(data)} chars")
+            return data
+        else:
+            log.warning("Trace file not found after replay")
+    except Exception as e:
+        log.warning(f"Trace replay exception: {e}")
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+    return ""
+
+
+# ── Codegen recording state ───────────────────────────────────────────────────
+_recording_process = None  # type: subprocess.Popen
+_recording_output_file: str = ""
+
+
+@app.post("/record/start")
+def record_start():
+    """Launch playwright codegen so the user can record reproduction steps."""
+    global _recording_process, _recording_output_file
+
+    if _recording_process and _recording_process.poll() is None:
+        raise HTTPException(status_code=409, detail="Recording already in progress.")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".py", delete=False)
+    _recording_output_file = tmp.name
+    tmp.close()
+
+    log.info(f"Starting codegen → {_recording_output_file}")
+    _recording_process = subprocess.Popen(
+        ["python3", "-m", "playwright", "codegen",
+         "--output", _recording_output_file, APP_URL],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"status": "recording", "message": "Browser opened — reproduce the bug then close the browser."}
+
+
+@app.get("/record/status")
+def record_status():
+    """Poll this to know when the user has closed the browser."""
+    global _recording_process
+    if _recording_process is None:
+        return {"status": "idle"}
+    if _recording_process.poll() is None:
+        return {"status": "recording"}
+    return {"status": "done"}
+
+
+@app.get("/record/finish")
+def record_finish():
+    """Read the recorded script, convert to natural language steps, then replay headlessly to capture screenshots + trace."""
+    global _recording_process, _recording_output_file
+
+    if _recording_process is None:
+        raise HTTPException(status_code=400, detail="No recording session found.")
+    if _recording_process.poll() is None:
+        raise HTTPException(status_code=400, detail="Recording still in progress — close the browser first.")
+
+    code = Path(_recording_output_file).read_text() if _recording_output_file else ""
+    Path(_recording_output_file).unlink(missing_ok=True)
+    _recording_process = None
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="No steps were recorded.")
+
+    log.info(f"Recorded code ({len(code)} chars) — converting to natural language")
+
+    import anthropic
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        r = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": f"""Convert this Playwright recorded script into clear, numbered natural language steps that any engineer can follow to reproduce the bug manually.
+
+Rules:
+- Each step must be a single, concrete action (click, type, navigate, select)
+- Write as if instructing a human tester — no code, no selectors
+- Include the actual values typed (e.g. "Type 'messi vs ronaldo' in the search field")
+- Keep steps short and action-focused
+- Do not include assert or wait steps
+
+Playwright script:
+```python
+{code}
+```
+
+Respond with a JSON array of step strings:
+["step 1", "step 2", ...]"""}]
+        )
+        raw = r.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        steps = json.loads(raw.strip())
+        log.info(f"Converted to {len(steps)} natural language steps — replaying for evidence")
+    except Exception as e:
+        log.error(f"Conversion failed: {e}")
+        return {"steps": [], "raw_code": code, "error": str(e)}
+
+    # ── Replay the exact recorded code headlessly with tracing injected ──────
+    trace_b64 = _replay_with_trace(code)
+    return {"steps": steps, "raw_code": code, "trace_b64": trace_b64}
+
+
 @app.post("/verify")
 def verify(req: VerifyRequest):
     from playwright.sync_api import sync_playwright
@@ -261,7 +456,12 @@ def verify(req: VerifyRequest):
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            storage_state=_VERCEL_STORAGE_STATE,
+            extra_http_headers=_bypass_headers(),
+        )
+        context.tracing.start(screenshots=True, snapshots=True)
         page = context.new_page()
 
         # Capture console output
@@ -299,7 +499,7 @@ def verify(req: VerifyRequest):
         page.on("response", _on_response)
 
         try:
-            page.goto(APP_URL, wait_until="domcontentloaded", timeout=15000)
+            page.goto(_add_bypass(APP_URL), wait_until="networkidle", timeout=30000)
         except Exception as e:
             browser.close()
             return {
@@ -340,6 +540,17 @@ def verify(req: VerifyRequest):
             })
 
         reproduction_url = page.url
+
+        trace_b64 = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tf:
+                trace_path = tf.name
+            context.tracing.stop(path=trace_path)
+            trace_b64 = base64.b64encode(Path(trace_path).read_bytes()).decode()
+            Path(trace_path).unlink(missing_ok=True)
+        except Exception as e:
+            log.warning(f"Could not save trace: {e}")
+
         browser.close()
 
     steps_summary = "\n".join(
@@ -378,7 +589,148 @@ def verify(req: VerifyRequest):
         "console_errors": console_errors[:10],
         "reproduction_url": reproduction_url,
         "failing_step": verdict.get("failing_step"),
+        "trace_b64": trace_b64,
     }
+
+
+@app.post("/run-newman")
+def run_newman():
+    """Run Newman against the bundled SportIQ collection and return failures."""
+    collection = Path(__file__).parent / "SportIQ_API.postman_collection.json"
+    if not collection.exists():
+        raise HTTPException(status_code=404, detail="Postman collection not found.")
+
+    report_file = tempfile.mktemp(suffix=".json")
+    try:
+        result = subprocess.run(
+            ["newman", "run", str(collection),
+             "--reporters", "json",
+             "--reporter-json-export", report_file,
+             "--timeout-request", "30000"],
+            capture_output=True, text=True, timeout=300,
+        )
+        log.info(f"Newman exit code: {result.returncode}")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Newman not installed. Run: npm install -g newman")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Newman timed out.")
+
+    if not Path(report_file).exists():
+        raise HTTPException(status_code=500, detail=f"Newman produced no report.\n{result.stderr[:500]}")
+
+    with open(report_file) as f:
+        report = json.load(f)
+    Path(report_file).unlink(missing_ok=True)
+
+    executions = report.get("run", {}).get("executions", [])
+    failures = []
+    for ex in executions:
+        assertions = ex.get("assertions") or []
+        failed = [a for a in assertions if a.get("error")]
+        resp = ex.get("response") or {}
+        status_code = resp.get("code", 0)
+        if not failed and status_code < 400:
+            continue
+
+        req = ex.get("request") or {}
+        url_obj = req.get("url") or {}
+        raw_url = url_obj.get("raw", "") if isinstance(url_obj, dict) else str(url_obj)
+        method = req.get("method", "GET")
+        body_obj = req.get("body") or {}
+        req_body = body_obj.get("raw", "") if isinstance(body_obj, dict) else ""
+
+        resp_body = ""
+        stream = resp.get("stream") or {}
+        if stream:
+            try:
+                resp_body = bytes(stream.get("data", [])).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        if not resp_body:
+            resp_body = resp.get("body", "")
+
+        assertion_msgs = "; ".join(
+            a["error"].get("message", a.get("assertion", "")) for a in failed
+        ) if failed else f"HTTP {status_code}"
+
+        failures.append({
+            "name": ex.get("item", {}).get("name", "Unnamed request"),
+            "method": method,
+            "url": raw_url,
+            "req_body": req_body,
+            "status": str(status_code),
+            "resp_body": resp_body[:500],
+            "assertion_errors": assertion_msgs,
+        })
+
+    stats = report.get("run", {}).get("stats", {})
+    return {
+        "failures": failures,
+        "total_requests": stats.get("requests", {}).get("total", 0),
+        "total_assertions": stats.get("assertions", {}).get("total", 0),
+        "failed_assertions": stats.get("assertions", {}).get("failed", 0),
+    }
+
+
+@app.post("/element-screenshot")
+def element_screenshot(req: ElementScreenshotRequest):
+    """Navigate to a URL, highlight a CSS selector, and return a focused screenshot."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = context.new_page()
+
+        try:
+            page.goto(req.url, wait_until="networkidle", timeout=30000)
+        except Exception as e:
+            browser.close()
+            raise HTTPException(status_code=400, detail=f"Could not load URL: {e}")
+
+        element_found = False
+
+        if req.selector:
+            try:
+                element = page.locator(req.selector).first
+                element.wait_for(timeout=5000)
+
+                # Highlight with a red outline so the issue is unmissable in Jira
+                page.evaluate(f"""() => {{
+                    const el = document.querySelector({json.dumps(req.selector)});
+                    if (el) {{
+                        el.style.outline = '3px solid #FF3B30';
+                        el.style.outlineOffset = '3px';
+                        el.style.boxShadow = '0 0 0 6px rgba(255,59,48,0.25)';
+                    }}
+                }}""")
+
+                element.scroll_into_view_if_needed()
+                page.wait_for_timeout(300)  # let highlight render
+
+                box = element.bounding_box()
+                if box:
+                    padding = 48
+                    clip = {
+                        "x": max(0, box["x"] - padding),
+                        "y": max(0, box["y"] - padding),
+                        "width": min(1280, box["width"] + padding * 2),
+                        "height": min(800, box["height"] + padding * 2),
+                    }
+                    png = page.screenshot(clip=clip)
+                    element_found = True
+                else:
+                    png = page.screenshot()
+            except Exception as e:
+                log.warning(f"Selector '{req.selector}' not found: {e} — falling back to full page")
+                png = page.screenshot()
+        else:
+            png = page.screenshot()
+
+        screenshot_b64 = base64.b64encode(png).decode()
+        browser.close()
+
+    return {"screenshot_b64": screenshot_b64, "element_found": element_found}
 
 
 @app.get("/health")
