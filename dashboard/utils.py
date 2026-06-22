@@ -71,7 +71,7 @@ def page_setup():
     col_spacer, col_about, col_manual = st.columns([0.7, 0.15, 0.15])
 
     with col_about:
-        with st.popover("About This App", use_container_width=True):
+        with st.popover("About", use_container_width=True):
             st.markdown("""
 **SportIQ Bug Tracker** is an AI-powered bug tracking agent built for the SportIQ platform.
 
@@ -87,7 +87,7 @@ Built by **Shweta Pandey**
             """)
 
     with col_manual:
-        with st.popover("User Manual", use_container_width=True):
+        with st.popover("Manual", use_container_width=True):
             st.markdown("#### Getting Started")
             st.markdown("""
 Start the full stack with a single command from the project root:
