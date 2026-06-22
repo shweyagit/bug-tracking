@@ -29,9 +29,9 @@ _ENV_BASE_URLS = {
 }
 
 
-def _sync_base_url():
+def _sync_full_url():
     env = st.session_state.get("api_env", "Production")
-    st.session_state["api_base_url"] = _ENV_BASE_URLS.get(env, "")
+    st.session_state["api_full_url"] = _ENV_BASE_URLS.get(env, "")
 
 
 def _verify_bug_on_app(bug: dict):
@@ -150,6 +150,13 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
     priority_map = {"critical": "Highest", "high": "High", "medium": "Medium", "low": "Low"}
     verification = st.session_state.get("verification_result")
 
+    # Read reporter name from whichever widget was used
+    reporter_name = (
+        st.session_state.get("reporter_name_api") or
+        st.session_state.get("reporter_name") or
+        ""
+    ).strip() or "Bug Tracking Agent"
+
     def _p(text):
         return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
 
@@ -159,7 +166,6 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
     def _code(text):
         return {"type": "codeBlock", "attrs": {"language": "text"}, "content": [{"type": "text", "text": text}]}
 
-    reporter_name = st.session_state.get("reporter_name", "").strip() or "Bug Tracking Agent"
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(bug.get("steps_to_reproduce", [])))
 
     content = [
@@ -181,12 +187,9 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
     if api_details:
         content.insert(0, _p(f"Environment: {api_details.get('env', 'Unknown')}"))
         content.insert(0, _h("Environment"))
-        method_endpoint = f"{api_details.get('method', '')} {api_details.get('endpoint', '')}".strip()
         content.append(_h("API Evidence"))
-        if api_details.get("base_url"):
-            content.append(_p(f"Base URL: {api_details['base_url']}"))
-        if method_endpoint:
-            content.append(_p(f"Endpoint: {method_endpoint}"))
+        if api_details.get("full_url"):
+            content.append(_p(f"URL: {api_details['method']} {api_details['full_url']}"))
         if api_details.get("elapsed_ms"):
             content.append(_p(f"Response time: {api_details['elapsed_ms']}ms"))
         if api_details.get("request_headers"):
@@ -217,8 +220,8 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
         if verification.steps:
             content.append(_h("Step-by-Step Observations"))
             for step in verification.steps:
-                status = "PASS" if step.success else "FAIL"
-                content.append(_p(f"[{status}] Step {step.step_number}: {step.step_description}\n→ {step.observation}"))
+                s = "PASS" if step.success else "FAIL"
+                content.append(_p(f"[{s}] Step {step.step_number}: {step.step_description}\n→ {step.observation}"))
         if verification.console_errors:
             content.append(_h("Console Errors"))
             content.append(_code("\n".join(verification.console_errors)))
@@ -408,28 +411,44 @@ with tab_ui:
 with tab_api:
     st.markdown("Build your request, run it live, and capture the full response as a bug ticket.")
 
-    # Initialise base URL in session state
-    if "api_base_url" not in st.session_state:
-        st.session_state["api_base_url"] = _ENV_BASE_URLS["Production"]
+    # Initialise full URL in session state
+    if "api_full_url" not in st.session_state:
+        st.session_state["api_full_url"] = _ENV_BASE_URLS["Production"]
 
-    # Environment + Base URL
-    env_col, base_url_col = st.columns([1, 3])
+    # Environment selector (drives base URL)
+    env_col, _ = st.columns([2, 5])
     with env_col:
-        api_env = st.selectbox(
+        st.selectbox(
             "Environment",
             list(_ENV_BASE_URLS.keys()),
             key="api_env",
-            on_change=_sync_base_url,
+            on_change=_sync_full_url,
         )
-    with base_url_col:
-        api_base_url = st.text_input("Base URL", key="api_base_url")
 
-    # Method + Endpoint
-    method_col, endpoint_col = st.columns([1, 4])
+    # Postman-style bar: [METHOD ▼] [URL input] [Send]
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"]:has(div.postman-bar) { align-items: flex-end !important; gap: 4px !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    method_col, url_col, send_col = st.columns([1, 7, 1])
     with method_col:
-        api_method = st.selectbox("Method", ["GET", "POST", "PUT", "PATCH", "DELETE"], key="api_method")
-    with endpoint_col:
-        api_endpoint = st.text_input("Endpoint", placeholder="/api/v1/compare", key="api_endpoint")
+        st.selectbox(
+            "Method",
+            ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            key="api_method",
+            label_visibility="collapsed",
+        )
+    with url_col:
+        st.text_input(
+            "URL",
+            key="api_full_url",
+            label_visibility="collapsed",
+            placeholder="https://api.sportiq.com/api/v1/compare",
+        )
+    with send_col:
+        run_clicked = st.button("Send", type="primary", key="run_request", use_container_width=True)
 
     # Headers editor
     st.markdown("**Headers**")
@@ -458,45 +477,46 @@ with tab_api:
     # Request Body
     api_request = st.text_area(
         "Request Body (JSON)",
-        height=100,
+        height=120,
         placeholder='{"player1": "Messi", "player2": "Ronaldo", "sport": "football"}',
         key="api_request",
     )
 
-    # Run Request
-    if st.button("▶  Run Request", type="secondary", key="run_request"):
-        ep = st.session_state.get("api_endpoint", "").strip()
-        base = st.session_state.get("api_base_url", "").rstrip("/")
-        full_url = f"{base}/{ep.lstrip('/')}" if ep else base
+    # Run request when Send is clicked
+    if run_clicked:
+        full_url = st.session_state.get("api_full_url", "").strip()
+        meth = st.session_state.get("api_method", "GET")
+        if not full_url:
+            st.error("Enter a URL first.")
+        else:
+            req_headers_dict = {
+                h["key"]: h["value"]
+                for h in st.session_state["api_headers"]
+                if h["key"].strip()
+            }
+            req_kwargs: dict = {"headers": req_headers_dict, "timeout": 30}
+            body_text = st.session_state.get("api_request", "").strip()
+            if body_text and meth not in ("GET",):
+                try:
+                    req_kwargs["json"] = json.loads(body_text)
+                except json.JSONDecodeError:
+                    req_kwargs["content"] = body_text.encode()
 
-        req_headers_dict = {
-            h["key"]: h["value"]
-            for h in st.session_state["api_headers"]
-            if h["key"].strip()
-        }
-        req_kwargs: dict = {"headers": req_headers_dict, "timeout": 30}
-        body_text = st.session_state.get("api_request", "").strip()
-        if body_text and st.session_state.get("api_method", "GET") not in ("GET",):
-            try:
-                req_kwargs["json"] = json.loads(body_text)
-            except json.JSONDecodeError:
-                req_kwargs["content"] = body_text.encode()
-
-        with st.spinner(f"Running {st.session_state.get('api_method', 'GET')} {full_url}..."):
-            try:
-                t0 = time.time()
-                r = httpx.request(st.session_state.get("api_method", "GET"), full_url, **req_kwargs)
-                elapsed_ms = int((time.time() - t0) * 1000)
-                st.session_state["api_response_data"] = {
-                    "status": r.status_code,
-                    "elapsed_ms": elapsed_ms,
-                    "body": r.text,
-                    "headers": dict(r.headers),
-                }
-                st.session_state["api_request_headers"] = req_headers_dict
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Request failed: {exc}")
+            with st.spinner(f"{meth} {full_url}..."):
+                try:
+                    t0 = time.time()
+                    r = httpx.request(meth, full_url, **req_kwargs)
+                    elapsed_ms = int((time.time() - t0) * 1000)
+                    st.session_state["api_response_data"] = {
+                        "status": r.status_code,
+                        "elapsed_ms": elapsed_ms,
+                        "body": r.text,
+                        "headers": dict(r.headers),
+                    }
+                    st.session_state["api_request_headers"] = req_headers_dict
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Request failed: {exc}")
 
     # Response panel
     resp_data = st.session_state.get("api_response_data")
@@ -523,7 +543,7 @@ with tab_api:
 
     st.divider()
     st.markdown("**What's wrong with this response?**")
-    api_description = st.text_area(
+    st.text_area(
         "api_desc_input",
         height=80,
         placeholder="e.g. Returns 200 but the player stats are fabricated — player has no data in the DB",
@@ -536,7 +556,7 @@ with tab_api:
     st.markdown("**Your Name**")
     st.text_input(
         "your_name_api",
-        value=st.session_state.get("reporter_name", ""),
+        value=st.session_state.get("reporter_name_api", ""),
         placeholder="e.g. Jane Smith",
         label_visibility="collapsed",
         key="reporter_name_api",
@@ -606,19 +626,15 @@ Rules:
 
 # ── API Bug AI Analysis ───────────────────────────────────────────────────────
 if api_submitted:
-    if st.session_state.get("reporter_name_api"):
-        st.session_state["reporter_name"] = st.session_state["reporter_name_api"]
-
-    api_ep = st.session_state.get("api_endpoint", "").strip()
     api_en = st.session_state.get("api_env", "Production")
-    api_base = st.session_state.get("api_base_url", "").rstrip("/")
+    full_url = st.session_state.get("api_full_url", "").strip()
     resp_data = st.session_state.get("api_response_data")
 
-    if not api_ep:
-        st.error("Endpoint is required.")
+    if not full_url:
+        st.error("URL is required.")
         st.stop()
     if not resp_data:
-        st.error("Please run the request first to capture the response.")
+        st.error("Please click Send first to capture the response.")
         st.stop()
 
     meth = st.session_state.get("api_method", "POST")
@@ -640,8 +656,7 @@ if api_submitted:
             prompt = f"""You are a senior QA engineer creating a bug ticket for an API failure.
 
 Environment: {api_en}
-Full URL: {api_base}/{api_ep.lstrip("/")}
-Method: {meth}
+URL: {meth} {full_url}
 Request headers:
 {req_headers_text}
 Request body: {req_body or "N/A"}
@@ -653,7 +668,7 @@ Response body: {resp_body[:2000] if resp_body else "N/A"}
 What's wrong: {extra or "Not specified"}
 
 Project: {st.session_state.get("api_project", "")}
-Reporter: {st.session_state.get("reporter_name", "") or "Team member"}
+Reporter: {st.session_state.get("reporter_name_api", "") or "Team member"}
 
 Respond ONLY with valid JSON:
 {{
@@ -693,8 +708,7 @@ Rules:
             st.session_state["api_details"] = {
                 "env": api_en,
                 "method": meth,
-                "endpoint": api_ep,
-                "base_url": api_base,
+                "full_url": full_url,
                 "request": req_body,
                 "request_headers": req_headers,
                 "status": api_st,
