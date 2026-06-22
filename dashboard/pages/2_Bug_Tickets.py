@@ -11,9 +11,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import ICON, page_setup
 from dashboard.db import query, execute
 
-st.set_page_config(page_title="Bug Tickets", page_icon=ICON, layout="wide")
+st.set_page_config(page_title="CI Raised Bugs", page_icon=ICON, layout="wide")
 page_setup()
-st.title("Bug Tickets")
+st.title("CI Raised Bugs")
 
 
 def _fetch_stack_traces(bug_id: str, failing_test_names: list) -> list[dict]:
