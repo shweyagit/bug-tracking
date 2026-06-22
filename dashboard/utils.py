@@ -81,7 +81,7 @@ It automatically detects, analyses, and files bug reports by connecting:
 - **Jira** — creates and tracks bug tickets automatically
 - **Claude AI** — analyses failures, writes reproduction steps, and prioritises bugs
 
-You can also manually report UI bugs (with Playwright browser recording) or API bugs (with Newman test runs), and Claude will draft the full Jira ticket for you.
+Manually report UI bugs (with Playwright browser recording) or API bugs (with the live request builder), and Claude drafts the full Jira ticket.
 
 Built by **Shweta Pandey**
             """)
@@ -89,21 +89,25 @@ Built by **Shweta Pandey**
     with col_manual:
         with st.popover("Manual", use_container_width=True):
             st.markdown("#### Getting Started")
+            # st.video("docs/videos/getting-started.mp4")
+            st.caption("_📹 Demo video coming soon_")
             st.markdown("""
-Start the full stack with a single command from the project root:
+The dashboard is live at:
+**[https://opisthognathous-amee-digitally.ngrok-free.dev](https://opisthognathous-amee-digitally.ngrok-free.dev)**
+
+To run it locally, start the full stack from the project root:
 ```bash
 ./start.sh
 ```
-This starts:
-- The dashboard at **http://localhost:8501**
-- The local verify agent on **port 8502** (handles browser recording & tracing)
-- ngrok tunnel for external access
+This starts the dashboard, the local verify agent on **port 8502**, and the ngrok tunnel.
 
 Check the sidebar — **Local Agent** should show 🟢 connected.
 If it shows 🔴 offline, run `python verify_service.py` manually in a terminal.
             """)
 
             st.markdown("#### Reporting a UI Bug")
+            # st.video("docs/videos/ui-bug.mp4")
+            st.caption("_📹 Demo video coming soon_")
             st.markdown("""
 **Step 1 — Record the bug**
 
@@ -112,37 +116,39 @@ A browser opens — navigate to the app and reproduce the bug exactly as a user 
 
 Click **Finish Recording**. The agent will:
 - Convert your actions into numbered natural language steps
-- Replay them headlessly to capture a **Playwright trace**
+- Replay them headlessly to capture a **Playwright trace** (screenshots + network logs + console errors)
 
-The trace is attached to the Jira ticket automatically.
+The trace attaches to the Jira ticket automatically.
 
 **Step 2 — Draft the ticket**
 
 Review the recorded steps — edit or remove any captured incorrectly.
-Describe the bug in plain English in the **Describe the bug** field (required).
-Add supporting files via the drag & drop uploader. Enter your name, then click **Draft Bug Ticket**.
-
-Claude AI will structure the report into a clear title, numbered steps, expected vs actual behaviour, priority, labels, and affected feature.
+Describe the bug in the **Describe the bug** field, attach any supporting files, enter your name, then click **Draft Bug Ticket**.
 
 **Step 3 — Review & Push**
 
-Review the AI-generated draft, edit any field, then click **Push to Jira**. The ticket is created with the Playwright trace and attachments included.
+Review the AI-generated draft, edit any field, then click **Push to Jira**.
             """)
 
             st.markdown("#### Reporting an API Bug")
+            # st.video("docs/videos/api-bug.mp4")
+            st.caption("_📹 Demo video coming soon_")
             st.markdown("""
-**Option A — Manual entry**
+Go to **Report Bug → API Bug tab**.
 
-Go to **Report Bug → API Bug tab**. Fill in environment, method, endpoint, request body, response status, response body, and any additional context. Click **Draft Bug Ticket** — AI formats the ticket with curl-reproducible steps, then push to Jira.
-
-**Option B — Run API Tests (recommended)**
-
-Open **Run API tests — auto-detect failures** and click **Run API Tests**.
-The agent runs the full SportIQ API test suite via Newman (~2 minutes).
-Any failing request appears as a card. Click **Draft** on any failure — the form auto-fills with all evidence. Click **Draft Bug Ticket** → review → **Push to Jira**.
+1. Select **Environment** — the base URL auto-fills (Production / Staging / Development / Local)
+2. Choose **Method** and enter the full **URL**
+3. Add or remove **Headers** as needed
+4. Write the **Request Body** (JSON)
+5. Click **Send** — the response status, body, headers, and latency are captured
+6. Describe what's wrong in the text box
+7. Click **Draft Bug Ticket** — Claude writes a developer-ready ticket with curl-reproducible steps
+8. Review and click **Push to Jira**
             """)
 
             st.markdown("#### Dashboard Pages")
+            # st.video("docs/videos/dashboard-overview.mp4")
+            st.caption("_📹 Demo video coming soon_")
             st.markdown("""
 | Page | Description |
 |------|-------------|
@@ -157,7 +163,6 @@ Any failing request appears as a card. Click **Draft** on any failure — the fo
             st.markdown("#### Tips")
             st.markdown("""
 - **Playwright trace** — download `playwright_trace.zip` from the Jira ticket and open it at [trace.playwright.dev](https://trace.playwright.dev) to replay every click, see network calls, and inspect console errors
-- **Newman tests** — the collection file `SportIQ_API.postman_collection.json` is in the project root; import it into Postman to run or edit individual tests
 - **Recording tips** — record only the steps needed to trigger the bug; avoid clicking around after the bug appears
 - **API bug priority** — if environment is Production, set priority to High or Critical
 - **Drag & drop** — the file uploader accepts multiple files at once; hold Cmd/Ctrl to select several
