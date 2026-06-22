@@ -644,6 +644,9 @@ if __name__ == "__main__":
     print("  SportIQ Verify Agent — ready")
     print("=" * 52)
     print(f"  Running at: http://localhost:8502")
+    print()
+    print("  Paste this URL into the SportIQ Bug")
+    print("  Dashboard to enable recording.")
     print("=" * 52 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8502)

@@ -19,11 +19,8 @@ def _favicon_b64() -> str:
 
 
 def get_verify_url() -> str:
-    """Return the verify agent URL — session override takes priority over env var."""
-    return (
-        st.session_state.get("verify_url_override") or
-        os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
-    )
+    """Return the verify agent URL from env var."""
+    return os.getenv("VERIFY_SERVICE_URL", "http://localhost:8502")
 
 
 @st.cache_data(ttl=15)
@@ -65,22 +62,13 @@ def page_setup():
         )
         st.markdown("---")
 
-        # Agent URL — remote users paste their executable URL here
-        url_input = st.text_input(
-            "Agent URL",
-            value=st.session_state.get("verify_url_override", ""),
-            placeholder="http://localhost:8502 or http://192.168.x.x:8502",
-            key="verify_url_override",
-            label_visibility="collapsed",
-        )
-
-        verify_url = url_input or os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+        verify_url = os.getenv("VERIFY_SERVICE_URL", "http://localhost:8502")
 
         if _agent_status(verify_url):
             st.markdown("🟢 **Local Agent** connected")
         else:
             st.markdown("🔴 **Local Agent** offline")
-            st.caption("Run the verify agent and paste its URL above.")
+            st.caption("Run verify_service.py to enable recording.")
 
     # Top-right popover buttons
     col_spacer, col_about, col_manual = st.columns([0.7, 0.15, 0.15])
