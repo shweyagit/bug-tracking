@@ -307,15 +307,49 @@ def _finish_recording():
             st.warning("Still recording — close the browser first.")
             return
 
-        with st.spinner("Converting steps and replaying to capture screenshots + trace..."):
+        with st.spinner("Replaying recording to capture trace..."):
             resp = httpx.get(f"{verify_url}/record/finish", timeout=120)
             resp.raise_for_status()
             data = resp.json()
 
-        steps = data.get("steps", [])
-        if not steps:
-            st.error(f"Could not convert steps: {data.get('error', 'Unknown error')}")
+        raw_code = data.get("raw_code", "")
+        if not raw_code.strip():
+            st.error(f"No steps were recorded: {data.get('error', 'Unknown error')}")
             return
+
+        # Convert raw Playwright script → natural language steps using Claude (server-side)
+        with st.spinner("Converting to readable steps with AI..."):
+            try:
+                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                r = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": f"""Convert this Playwright recorded script into clear, numbered natural language steps that any engineer can follow to reproduce the bug manually.
+
+Rules:
+- Each step must be a single, concrete action (click, type, navigate, select)
+- Write as if instructing a human tester — no code, no selectors
+- Include the actual values typed (e.g. "Type 'messi vs ronaldo' in the search field")
+- Keep steps short and action-focused
+- Do not include assert or wait steps
+
+Playwright script:
+```python
+{raw_code}
+```
+
+Respond with a JSON array of step strings:
+["step 1", "step 2", ...]"""}],
+                )
+                raw = r.content[0].text.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                steps = json.loads(raw.strip())
+            except Exception as e:
+                st.error(f"Could not convert steps: {e}")
+                return
 
         st.session_state["recorded_steps"] = steps
         st.session_state["recording"] = False
@@ -328,7 +362,7 @@ def _finish_recording():
             }]
             st.success(f"Recorded {len(steps)} steps + Playwright trace captured — will attach to Jira automatically.")
         else:
-            st.success(f"Recorded {len(steps)} steps — trace unavailable (verify service may be offline).")
+            st.success(f"Recorded {len(steps)} steps — trace unavailable.")
     except Exception as e:
         st.error(f"Failed to finish recording: {e}")
 

@@ -368,7 +368,9 @@ def record_status():
 
 @app.get("/record/finish")
 def record_finish():
-    """Read the recorded script, convert to natural language steps, then replay headlessly to capture screenshots + trace."""
+    """Read the recorded script and replay headlessly to capture trace.
+    Step conversion to natural language is handled by the dashboard (no API key needed here).
+    """
     global _recording_process, _recording_output_file
 
     if _recording_process is None:
@@ -383,45 +385,9 @@ def record_finish():
     if not code.strip():
         raise HTTPException(status_code=400, detail="No steps were recorded.")
 
-    log.info(f"Recorded code ({len(code)} chars) — converting to natural language")
-
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    try:
-        r = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": f"""Convert this Playwright recorded script into clear, numbered natural language steps that any engineer can follow to reproduce the bug manually.
-
-Rules:
-- Each step must be a single, concrete action (click, type, navigate, select)
-- Write as if instructing a human tester — no code, no selectors
-- Include the actual values typed (e.g. "Type 'messi vs ronaldo' in the search field")
-- Keep steps short and action-focused
-- Do not include assert or wait steps
-
-Playwright script:
-```python
-{code}
-```
-
-Respond with a JSON array of step strings:
-["step 1", "step 2", ...]"""}]
-        )
-        raw = r.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        steps = json.loads(raw.strip())
-        log.info(f"Converted to {len(steps)} natural language steps — replaying for evidence")
-    except Exception as e:
-        log.error(f"Conversion failed: {e}")
-        return {"steps": [], "raw_code": code, "error": str(e)}
-
-    # ── Replay the exact recorded code headlessly with tracing injected ──────
+    log.info(f"Recorded code ({len(code)} chars) — replaying for trace")
     trace_b64 = _replay_with_trace(code)
-    return {"steps": steps, "raw_code": code, "trace_b64": trace_b64}
+    return {"raw_code": code, "trace_b64": trace_b64}
 
 
 @app.post("/verify")
