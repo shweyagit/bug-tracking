@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import sys
+import time
 from base64 import b64encode
 
 import anthropic
@@ -18,6 +19,19 @@ from utils import ICON, page_setup
 
 st.set_page_config(page_title="Report a Bug", page_icon=ICON, layout="wide")
 page_setup()
+
+# ── Environment → Base URL mapping ────────────────────────────────────────────
+_ENV_BASE_URLS = {
+    "Production":  os.getenv("PROD_BASE_URL",    "https://api.sportiq.com"),
+    "Staging":     os.getenv("STAGING_BASE_URL", "https://staging-api.sportiq.com"),
+    "Development": os.getenv("DEV_BASE_URL",     "http://dev-api.sportiq.com"),
+    "Local":       os.getenv("LOCAL_BASE_URL",   "http://localhost:3000"),
+}
+
+
+def _sync_base_url():
+    env = st.session_state.get("api_env", "Production")
+    st.session_state["api_base_url"] = _ENV_BASE_URLS.get(env, "")
 
 
 def _verify_bug_on_app(bug: dict):
@@ -41,7 +55,6 @@ def _verify_bug_on_app(bug: dict):
             st.warning("Local Agent not reachable — skipping verification. Bug will be pushed without screenshots.")
             return
 
-    # Convert response into session state format
     class _Step:
         def __init__(self, d):
             self.step_number = d["step_number"]
@@ -110,7 +123,6 @@ def _show_verification_result(result):
         with st.expander(f"{status} Step {step.step_number}: {step.step_description}"):
             st.markdown(f"**Action:** {step.action_taken}")
             st.markdown(f"**Observation:** {step.observation}")
-            import base64
             if step.screenshot_b64:
                 try:
                     img_bytes = base64.b64decode(step.screenshot_b64)
@@ -165,25 +177,33 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
         _p(f"{reporter_name} · via Bug Tracking Agent"),
     ]
 
-    # Include API details if provided (API bug tickets get environment first)
     api_details = st.session_state.get("api_details")
     if api_details:
         content.insert(0, _p(f"Environment: {api_details.get('env', 'Unknown')}"))
         content.insert(0, _h("Environment"))
         method_endpoint = f"{api_details.get('method', '')} {api_details.get('endpoint', '')}".strip()
         content.append(_h("API Evidence"))
+        if api_details.get("base_url"):
+            content.append(_p(f"Base URL: {api_details['base_url']}"))
         if method_endpoint:
             content.append(_p(f"Endpoint: {method_endpoint}"))
+        if api_details.get("elapsed_ms"):
+            content.append(_p(f"Response time: {api_details['elapsed_ms']}ms"))
+        if api_details.get("request_headers"):
+            content.append(_p("Request headers:"))
+            content.append(_code("\n".join(f"{k}: {v}" for k, v in api_details["request_headers"].items())))
         if api_details.get("request"):
             content.append(_p("Request body:"))
             content.append(_code(api_details["request"]))
         if api_details.get("status"):
             content.append(_p(f"Response status: {api_details['status']}"))
+        if api_details.get("response_headers"):
+            content.append(_p("Response headers:"))
+            content.append(_code("\n".join(f"{k}: {v}" for k, v in api_details["response_headers"].items())))
         if api_details.get("response"):
             content.append(_p("Response body:"))
-            content.append(_code(api_details["response"]))
+            content.append(_code(api_details["response"][:3000]))
 
-    # Include verification result if available
     if verification:
         confirmed = "CONFIRMED" if verification.bug_confirmed else "NOT REPRODUCED"
         content += [
@@ -194,15 +214,11 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
             content.append(_p(f"Failed at URL: {verification.reproduction_url}"))
         if verification.failing_step:
             content.append(_p(f"Bug appeared at step: {verification.failing_step}"))
-
-        # Step-by-step observations
         if verification.steps:
             content.append(_h("Step-by-Step Observations"))
             for step in verification.steps:
                 status = "PASS" if step.success else "FAIL"
                 content.append(_p(f"[{status}] Step {step.step_number}: {step.step_description}\n→ {step.observation}"))
-
-        # Console errors
         if verification.console_errors:
             content.append(_h("Console Errors"))
             content.append(_code("\n".join(verification.console_errors)))
@@ -248,12 +264,10 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
             except Exception as exc:
                 st.warning(f"Could not attach {name}: {exc}")
 
-        # User-uploaded attachments
         for f in (attachments or []):
             with st.spinner(f"Attaching {f.name}..."):
                 _attach(f.name, f.read(), f.type)
 
-        # Auto-captured replay screenshots + trace
         for sc in st.session_state.get("auto_screenshots", []):
             with st.spinner(f"Attaching {sc['name']}..."):
                 _attach(sc["name"], sc["bytes"], sc["type"])
@@ -262,7 +276,8 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
         st.markdown(f"**[Open in Jira]({ticket_url})**")
 
         for key in ["generated_bug", "attachments", "verification_result",
-                    "auto_screenshots", "api_details", "recorded_steps"]:
+                    "auto_screenshots", "api_details", "recorded_steps",
+                    "api_response_data", "api_request_headers"]:
             st.session_state.pop(key, None)
 
     except Exception as e:
@@ -302,7 +317,6 @@ def _finish_recording():
         st.session_state["recorded_steps"] = steps
         st.session_state["recording"] = False
 
-        # Store trace so it attaches to Jira automatically
         if data.get("trace_b64"):
             st.session_state["auto_screenshots"] = [{
                 "name": "playwright_trace.zip",
@@ -318,9 +332,8 @@ def _finish_recording():
 
 # ── Page ──────────────────────────────────────────────────────────────────────
 st.title("Report a Bug")
-st.markdown("Choose the bug type — UI bugs are verified on the browser, API bugs go straight to Jira with full request/response evidence.")
+st.markdown("Choose the bug type — UI bugs are verified on the browser, API bugs are run live and captured with full request/response evidence.")
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_ui, tab_api = st.tabs(["UI Bug", "API Bug"])
 
 # ── UI Bug Tab ────────────────────────────────────────────────────────────────
@@ -391,108 +404,131 @@ with tab_ui:
     )
     ui_submitted = st.button("Draft Bug Ticket", type="primary", key="ui_submit")
 
-# ── API Bug Tab ───────────────────────────────────────────────────────────────
+# ── API Bug Tab ────────────────────────────────────────────────────────────────
 with tab_api:
-    st.markdown("Fill in the API evidence — the AI will structure a developer-ready ticket with curl steps and full request/response.")
+    st.markdown("Build your request, run it live, and capture the full response as a bug ticket.")
 
-    # ── Newman Import ──────────────────────────────────────────────────────────
-    with st.expander("Run API tests — auto-detect failures (recommended)", expanded=False):
-        st.markdown(
-            "Runs the built-in SportIQ API test suite via Newman. "
-            "Any failing request appears below — click **Draft** to turn it into a structured Jira ticket instantly."
-        )
+    # Initialise base URL in session state
+    if "api_base_url" not in st.session_state:
+        st.session_state["api_base_url"] = _ENV_BASE_URLS["Production"]
 
-        if st.button("Run API Tests", type="secondary", key="newman_run"):
-            verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
-            with st.spinner("Running API tests against SportIQ... this takes ~2 minutes"):
-                try:
-                    resp = httpx.post(f"{verify_url}/run-newman", timeout=300)
-                    resp.raise_for_status()
-                    st.session_state["newman_results"] = resp.json()
-                except Exception as e:
-                    st.error(f"Could not run tests: {e}\n\nMake sure verify_service.py is running.")
-
-        results = st.session_state.get("newman_results")
-        if results:
-            total = results.get("total_requests", 0)
-            failed_a = results.get("failed_assertions", 0)
-            total_a = results.get("total_assertions", 0)
-            st.caption(f"{total} requests · {total_a - failed_a}/{total_a} assertions passed")
-
-            failures = results.get("failures", [])
-            if not failures:
-                st.success("All tests passed — no failures to report.")
-            else:
-                st.warning(f"**{len(failures)} failing request(s) found:**")
-                for idx, f in enumerate(failures):
-                    col_info, col_btn = st.columns([8, 2])
-                    with col_info:
-                        st.markdown(
-                            f"**{f['method']} {f['url']}**  \n"
-                            f"`{f['name']}` — _{f['assertion_errors']}_"
-                        )
-                    with col_btn:
-                        if st.button("Draft", key=f"newman_draft_{idx}", type="secondary"):
-                            st.session_state["newman_prefill"] = f
-
-    # Pre-fill form from Newman selection
-    _pf = st.session_state.pop("newman_prefill", None)
-
-    # Default values (overridden by Newman prefill if set)
-    _method_opts = ["POST", "GET", "PUT", "PATCH", "DELETE"]
-    _def_method = _pf["method"] if _pf and _pf["method"] in _method_opts else "POST"
-    _def_endpoint = _pf["url"] if _pf else ""
-    _def_req = _pf["req_body"] if _pf else ""
-    _def_status = _pf["status"] if _pf else ""
-    _def_resp = _pf["resp_body"] if _pf else ""
-    _def_ctx = f"Assertion errors: {_pf['assertion_errors']}\nTest name: {_pf['name']}" if _pf else ""
-
-    if _pf:
-        st.info(f"Pre-filled from Newman: **{_pf['method']} {_pf['url']}**")
-
-    api_env_col, api_method_col, api_endpoint_col = st.columns([2, 1, 3])
-    with api_env_col:
+    # Environment + Base URL
+    env_col, base_url_col = st.columns([1, 3])
+    with env_col:
         api_env = st.selectbox(
-            "Environment *",
-            ["Production", "Staging", "Development", "Local"],
+            "Environment",
+            list(_ENV_BASE_URLS.keys()),
             key="api_env",
+            on_change=_sync_base_url,
         )
-    with api_method_col:
-        api_method = st.selectbox("Method *", _method_opts,
-                                  index=_method_opts.index(_def_method), key="api_method")
-    with api_endpoint_col:
-        api_endpoint = st.text_input("Endpoint *", value=_def_endpoint,
-                                     placeholder="e.g. /api/v1/analyse", key="api_endpoint")
+    with base_url_col:
+        api_base_url = st.text_input("Base URL", key="api_base_url")
 
+    # Method + Endpoint
+    method_col, endpoint_col = st.columns([1, 4])
+    with method_col:
+        api_method = st.selectbox("Method", ["GET", "POST", "PUT", "PATCH", "DELETE"], key="api_method")
+    with endpoint_col:
+        api_endpoint = st.text_input("Endpoint", placeholder="/api/v1/compare", key="api_endpoint")
+
+    # Headers editor
+    st.markdown("**Headers**")
+    if "api_headers" not in st.session_state:
+        st.session_state["api_headers"] = [{"key": "Content-Type", "value": "application/json"}]
+
+    updated_headers = []
+    for i, h in enumerate(st.session_state["api_headers"]):
+        hk_col, hv_col, hdel_col = st.columns([3, 5, 1])
+        with hk_col:
+            k = st.text_input("Key", value=h["key"], key=f"hk_{i}",
+                               label_visibility="collapsed", placeholder="Header name")
+        with hv_col:
+            v = st.text_input("Value", value=h["value"], key=f"hv_{i}",
+                               label_visibility="collapsed", placeholder="Value")
+        with hdel_col:
+            remove = st.button("✕", key=f"hdel_{i}")
+        if not remove:
+            updated_headers.append({"key": k, "value": v})
+    st.session_state["api_headers"] = updated_headers
+
+    if st.button("+ Add Header", key="add_header"):
+        st.session_state["api_headers"].append({"key": "", "value": ""})
+        st.rerun()
+
+    # Request Body
     api_request = st.text_area(
-        "Request body",
-        value=_def_req,
-        height=80,
-        placeholder='e.g. {"query": "messi vs ronaldo"}',
+        "Request Body (JSON)",
+        height=100,
+        placeholder='{"player1": "Messi", "player2": "Ronaldo", "sport": "football"}',
         key="api_request",
     )
 
-    api_status_col, api_ct_col = st.columns([1, 3])
-    with api_status_col:
-        api_status = st.text_input("Response status *", value=_def_status,
-                                   placeholder="e.g. 500", key="api_status")
-    with api_ct_col:
-        api_content_type = st.text_input("Response content-type",
-                                         placeholder="e.g. application/json", key="api_content_type")
+    # Run Request
+    if st.button("▶  Run Request", type="secondary", key="run_request"):
+        ep = st.session_state.get("api_endpoint", "").strip()
+        base = st.session_state.get("api_base_url", "").rstrip("/")
+        full_url = f"{base}/{ep.lstrip('/')}" if ep else base
 
-    api_response = st.text_area(
-        "Response body",
-        value=_def_resp,
-        height=80,
-        placeholder='e.g. {"error": "OpenAI timeout after 30s"}',
-        key="api_response",
-    )
+        req_headers_dict = {
+            h["key"]: h["value"]
+            for h in st.session_state["api_headers"]
+            if h["key"].strip()
+        }
+        req_kwargs: dict = {"headers": req_headers_dict, "timeout": 30}
+        body_text = st.session_state.get("api_request", "").strip()
+        if body_text and st.session_state.get("api_method", "GET") not in ("GET",):
+            try:
+                req_kwargs["json"] = json.loads(body_text)
+            except json.JSONDecodeError:
+                req_kwargs["content"] = body_text.encode()
+
+        with st.spinner(f"Running {st.session_state.get('api_method', 'GET')} {full_url}..."):
+            try:
+                t0 = time.time()
+                r = httpx.request(st.session_state.get("api_method", "GET"), full_url, **req_kwargs)
+                elapsed_ms = int((time.time() - t0) * 1000)
+                st.session_state["api_response_data"] = {
+                    "status": r.status_code,
+                    "elapsed_ms": elapsed_ms,
+                    "body": r.text,
+                    "headers": dict(r.headers),
+                }
+                st.session_state["api_request_headers"] = req_headers_dict
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Request failed: {exc}")
+
+    # Response panel
+    resp_data = st.session_state.get("api_response_data")
+    if resp_data:
+        st.divider()
+        ok = resp_data["status"] < 400
+        color = "#28a745" if ok else "#dc3545"
+        badge = "✅" if ok else "❌"
+        st.markdown(
+            f"<span style='font-weight:700; font-size:15px; color:{color}'>"
+            f"{badge} {resp_data['status']}</span>"
+            f"&emsp;<span style='color:#888; font-size:13px'>{resp_data['elapsed_ms']} ms</span>",
+            unsafe_allow_html=True,
+        )
+        rb_tab, rh_tab = st.tabs(["Response Body", "Response Headers"])
+        with rb_tab:
+            try:
+                st.code(json.dumps(json.loads(resp_data["body"]), indent=2), language="json")
+            except Exception:
+                st.code(resp_data["body"], language="text")
+        with rh_tab:
+            for k, v in resp_data["headers"].items():
+                st.text(f"{k}: {v}")
+
+    st.divider()
+    st.markdown("**What's wrong with this response?**")
     api_description = st.text_area(
-        "Additional context (optional)",
-        value=_def_ctx,
+        "api_desc_input",
         height=80,
-        placeholder="e.g. This only happens on the first request after a cold start.",
+        placeholder="e.g. Returns 200 but the player stats are fabricated — player has no data in the DB",
         key="api_description",
+        label_visibility="collapsed",
     )
     api_project = st.text_input("Project / Product", value=os.getenv("PROJECT_NAME", "SportIQ"), key="api_project")
 
@@ -570,57 +606,73 @@ Rules:
 
 # ── API Bug AI Analysis ───────────────────────────────────────────────────────
 if api_submitted:
-    # sync api name field into shared reporter_name
     if st.session_state.get("reporter_name_api"):
         st.session_state["reporter_name"] = st.session_state["reporter_name_api"]
+
     api_ep = st.session_state.get("api_endpoint", "").strip()
-    api_st = st.session_state.get("api_status", "").strip()
     api_en = st.session_state.get("api_env", "Production")
+    api_base = st.session_state.get("api_base_url", "").rstrip("/")
+    resp_data = st.session_state.get("api_response_data")
+
     if not api_ep:
         st.error("Endpoint is required.")
         st.stop()
-    if not api_st:
-        st.error("Response status is required.")
+    if not resp_data:
+        st.error("Please run the request first to capture the response.")
         st.stop()
+
+    meth = st.session_state.get("api_method", "POST")
+    req_body = st.session_state.get("api_request", "")
+    req_headers = st.session_state.get("api_request_headers", {})
+    resp_body = resp_data["body"]
+    resp_headers = resp_data["headers"]
+    elapsed_ms = resp_data.get("elapsed_ms")
+    api_st = str(resp_data["status"])
+    extra = st.session_state.get("api_description", "")
+
+    req_headers_text = "\n".join(f"{k}: {v}" for k, v in req_headers.items()) if req_headers else "N/A"
+    resp_headers_text = "\n".join(f"{k}: {v}" for k, v in list(resp_headers.items())[:15]) if resp_headers else "N/A"
 
     with st.spinner("Analysing with AI..."):
         try:
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            meth = st.session_state.get("api_method", "POST")
-            req_body = st.session_state.get("api_request", "")
-            resp_body = st.session_state.get("api_response", "")
-            extra = st.session_state.get("api_description", "")
 
             prompt = f"""You are a senior QA engineer creating a bug ticket for an API failure.
 
 Environment: {api_en}
-Endpoint: {meth} {api_ep}
+Full URL: {api_base}/{api_ep.lstrip("/")}
+Method: {meth}
+Request headers:
+{req_headers_text}
 Request body: {req_body or "N/A"}
 Response status: {api_st}
-Response body: {resp_body or "N/A"}
-Additional context: {extra or "None"}
+Response time: {elapsed_ms}ms
+Response headers:
+{resp_headers_text}
+Response body: {resp_body[:2000] if resp_body else "N/A"}
+What's wrong: {extra or "Not specified"}
 
 Project: {st.session_state.get("api_project", "")}
 Reporter: {st.session_state.get("reporter_name", "") or "Team member"}
 
 Respond ONLY with valid JSON:
 {{
-  "title": "HTTP method + endpoint path + status code, max 100 chars (e.g. POST /api/v1/analyse returns 500)",
-  "description": "Precise description including environment, what was called, and what error occurred",
-  "steps_to_reproduce": ["curl or API client steps to reproduce"],
-  "expected_behaviour": "Expected HTTP status and response",
+  "title": "METHOD /endpoint returns STATUS — max 100 chars",
+  "description": "Precise description including environment, what was called, and what went wrong",
+  "steps_to_reproduce": ["curl command with exact headers and body to reproduce"],
+  "expected_behaviour": "Expected HTTP status and response format",
   "actual_behaviour": "Actual HTTP status and exact error returned",
   "priority": "critical|high|medium|low",
-  "labels": ["api", "environment-label", "optional-third"],
+  "labels": ["api", "environment-kebab-case", "optional-third"],
   "affected_feature": "API endpoint or service name"
 }}
 
 Rules:
-- Title MUST follow pattern: "METHOD /path returns STATUS"
-- steps_to_reproduce must be curl commands or Postman-style steps with exact request body
-- labels must include "api" and the environment in kebab-case (e.g. "production", "staging")
-- If environment is Production, default priority to high or critical
-- actual_behaviour must quote the exact error message from the response body
+- Title MUST follow: "METHOD /path returns STATUS"
+- steps_to_reproduce must be curl commands with exact headers and body
+- labels must include "api" and environment in kebab-case
+- If Production, default priority to high or critical
+- actual_behaviour must quote exact error from response body
 - priority: critical=production down/data loss, high=production degraded, medium=non-prod, low=cosmetic"""
 
             message = client.messages.create(
@@ -642,9 +694,13 @@ Rules:
                 "env": api_en,
                 "method": meth,
                 "endpoint": api_ep,
+                "base_url": api_base,
                 "request": req_body,
+                "request_headers": req_headers,
                 "status": api_st,
                 "response": resp_body,
+                "response_headers": dict(list(resp_headers.items())[:15]),
+                "elapsed_ms": elapsed_ms,
             }
         except Exception as e:
             st.error(f"AI analysis failed: {e}")
