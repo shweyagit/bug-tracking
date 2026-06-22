@@ -346,9 +346,9 @@ def record_start():
 
     log.info(f"Starting codegen → {_recording_output_file}")
     from playwright._impl._driver import compute_driver_executable
-    driver = str(compute_driver_executable())
+    node, cli = compute_driver_executable()
     _recording_process = subprocess.Popen(
-        [driver, "codegen", "--output", _recording_output_file, APP_URL],
+        [str(node), str(cli), "codegen", "--output", _recording_output_file, APP_URL],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -686,10 +686,10 @@ def _ensure_playwright_installed():
     """Install Playwright Chromium on first run (needed after exe download)."""
     try:
         from playwright._impl._driver import compute_driver_executable
-        driver = str(compute_driver_executable())
+        node, cli = compute_driver_executable()
         log.info("Checking Playwright Chromium installation...")
         result = subprocess.run(
-            [driver, "install", "chromium"],
+            [str(node), str(cli), "install", "chromium"],
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode == 0:
