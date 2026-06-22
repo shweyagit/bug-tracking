@@ -2,7 +2,7 @@ import streamlit as st
 
 pg = st.navigation({
     "": [
-        st.Page("dashboard/pages/Home.py",             title="Dashboard",       icon="🏠", default=True),
+        st.Page("dashboard/pages/Home.py",             title="Home",            icon="🏠", default=True),
     ],
     "CI Dashboard": [
         st.Page("dashboard/pages/1_Test_Failures.py",  title="Test Failures",   icon="❌"),
@@ -15,7 +15,6 @@ pg = st.navigation({
     "Tracking": [
         st.Page("dashboard/pages/4_Release_Bugs.py",   title="Release Bugs",    icon="🚀"),
         st.Page("dashboard/pages/6_Jira_Tracker.py",   title="Jira Tracker",    icon="🔗"),
-        st.Page("dashboard/pages/_User_Manual.py",     title="User Manual",     icon="📖"),
     ],
 })
 pg.run()
