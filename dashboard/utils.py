@@ -76,7 +76,7 @@ def page_setup():
     with col_about:
         with st.popover("About", use_container_width=True):
             st.markdown("""
-**SportIQ Bug Tracker** is an AI-powered bug tracking agent built for the SportIQ platform.
+**SportIQ CI Bug Dashboard** is an AI-powered bug tracking agent built for the SportIQ platform.
 
 It automatically detects, analyses, and files bug reports by connecting:
 - **GitHub Actions** — captures CI test failures in real time

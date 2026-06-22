@@ -9,7 +9,7 @@ st.set_page_config(page_title="User Manual", page_icon=ICON, layout="wide")
 page_setup()
 
 st.title("User Manual")
-st.markdown("Everything you need to use the SportIQ Bug Tracker effectively.")
+st.markdown("Everything you need to use the SportIQ CI Bug Dashboard effectively.")
 
 st.divider()
 
