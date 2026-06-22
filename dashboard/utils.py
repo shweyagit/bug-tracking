@@ -67,12 +67,12 @@ def page_setup():
             st.markdown("🔴 **Local Agent** offline")
             st.caption("Run `python verify_service.py` to enable recording.")
 
-    # About Me popover — top-right, rendered after sidebar
-    col_spacer, col_btn = st.columns([0.85, 0.15])
-    with col_btn:
-        with st.popover("About Me", use_container_width=True):
-            with st.expander("About This App"):
-                st.markdown("""
+    # Top-right popover buttons
+    col_spacer, col_about, col_manual = st.columns([0.7, 0.15, 0.15])
+
+    with col_about:
+        with st.popover("About This App", use_container_width=True):
+            st.markdown("""
 **SportIQ Bug Tracker** is an AI-powered bug tracking agent built for the SportIQ platform.
 
 It automatically detects, analyses, and files bug reports by connecting:
@@ -84,11 +84,12 @@ It automatically detects, analyses, and files bug reports by connecting:
 You can also manually report UI bugs (with Playwright browser recording) or API bugs (with Newman test runs), and Claude will draft the full Jira ticket for you.
 
 Built by **Shweta Pandey**
-                """)
+            """)
 
-            with st.expander("User Manual"):
-                st.markdown("#### Getting Started")
-                st.markdown("""
+    with col_manual:
+        with st.popover("User Manual", use_container_width=True):
+            st.markdown("#### Getting Started")
+            st.markdown("""
 Start the full stack with a single command from the project root:
 ```bash
 ./start.sh
@@ -100,10 +101,10 @@ This starts:
 
 Check the sidebar — **Local Agent** should show 🟢 connected.
 If it shows 🔴 offline, run `python verify_service.py` manually in a terminal.
-                """)
+            """)
 
-                st.markdown("#### Reporting a UI Bug")
-                st.markdown("""
+            st.markdown("#### Reporting a UI Bug")
+            st.markdown("""
 **Step 1 — Record the bug**
 
 Go to **Report Bug → UI Bug tab**. Open **Record reproduction steps** and click **Record Steps**.
@@ -126,10 +127,10 @@ Claude AI will structure the report into a clear title, numbered steps, expected
 **Step 3 — Review & Push**
 
 Review the AI-generated draft, edit any field, then click **Push to Jira**. The ticket is created with the Playwright trace and attachments included.
-                """)
+            """)
 
-                st.markdown("#### Reporting an API Bug")
-                st.markdown("""
+            st.markdown("#### Reporting an API Bug")
+            st.markdown("""
 **Option A — Manual entry**
 
 Go to **Report Bug → API Bug tab**. Fill in environment, method, endpoint, request body, response status, response body, and any additional context. Click **Draft Bug Ticket** — AI formats the ticket with curl-reproducible steps, then push to Jira.
@@ -139,10 +140,10 @@ Go to **Report Bug → API Bug tab**. Fill in environment, method, endpoint, req
 Open **Run API tests — auto-detect failures** and click **Run API Tests**.
 The agent runs the full SportIQ API test suite via Newman (~2 minutes).
 Any failing request appears as a card. Click **Draft** on any failure — the form auto-fills with all evidence. Click **Draft Bug Ticket** → review → **Push to Jira**.
-                """)
+            """)
 
-                st.markdown("#### Dashboard Pages")
-                st.markdown("""
+            st.markdown("#### Dashboard Pages")
+            st.markdown("""
 | Page | Description |
 |------|-------------|
 | Test Failures | CI failures from GitHub Actions with AI root-cause analysis |
@@ -151,13 +152,13 @@ Any failing request appears as a card. Click **Draft** on any failure — the fo
 | Release Bugs | Bugs that were open at the time of each release |
 | Report Bug | File a new UI or API bug manually |
 | Jira Tracker | Browse bugs already pushed to your Jira board |
-                """)
+            """)
 
-                st.markdown("#### Tips")
-                st.markdown("""
+            st.markdown("#### Tips")
+            st.markdown("""
 - **Playwright trace** — download `playwright_trace.zip` from the Jira ticket and open it at [trace.playwright.dev](https://trace.playwright.dev) to replay every click, see network calls, and inspect console errors
 - **Newman tests** — the collection file `SportIQ_API.postman_collection.json` is in the project root; import it into Postman to run or edit individual tests
 - **Recording tips** — record only the steps needed to trigger the bug; avoid clicking around after the bug appears
 - **API bug priority** — if environment is Production, set priority to High or Critical
 - **Drag & drop** — the file uploader accepts multiple files at once; hold Cmd/Ctrl to select several
-                """)
+            """)
