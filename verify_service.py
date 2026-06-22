@@ -273,14 +273,15 @@ def _observe(page, step: str, action_desc: str, network_logs: list[dict], consol
         return {"success": False, "observation": str(e), "bug_signs": None, "screenshot_b64": fallback_png, "failed_requests": []}
 
 
-def _replay_with_trace(code: str) -> str:
+def _replay_with_trace(code: str) -> tuple[str, str]:
     """
     Extract page.* action lines from the codegen script and replay them
     in a fresh Playwright session with tracing. Runs in-process so it works
     inside a PyInstaller executable (no python3 subprocess needed).
+    Returns (trace_b64, error_reason) — error_reason is "" on success.
     """
     if not code.strip():
-        return ""
+        return "", "No recorded code found."
 
     page_actions = []
     for line in code.split("\n"):
@@ -290,7 +291,7 @@ def _replay_with_trace(code: str) -> str:
 
     if not page_actions:
         log.warning("No page.* actions found in codegen output")
-        return ""
+        return "", "Could not extract page actions from recorded script — unexpected codegen format."
 
     trace_path = tempfile.mktemp(suffix=".zip")
 
@@ -302,6 +303,8 @@ def _replay_with_trace(code: str) -> str:
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
             page = context.new_page()
             try:
+                page.set_default_timeout(10000)
+                page.set_default_navigation_timeout(15000)
                 for action_line in page_actions:
                     try:
                         exec(action_line, {"page": page})  # noqa: S102
@@ -310,21 +313,31 @@ def _replay_with_trace(code: str) -> str:
             except Exception as e:
                 log.warning(f"Replay error: {e}")
             finally:
-                context.tracing.stop(path=trace_path)
-            context.close()
-            browser.close()
+                try:
+                    context.tracing.stop(path=trace_path)
+                except Exception as e:
+                    log.warning(f"tracing.stop failed: {e}")
+                    return "", f"Trace could not be saved: {e}"
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
 
         if Path(trace_path).exists():
             data = base64.b64encode(Path(trace_path).read_bytes()).decode()
             Path(trace_path).unlink(missing_ok=True)
             log.info(f"Trace captured — {len(data)} chars")
-            return data
+            return data, ""
         else:
             log.warning("Trace file not found after replay")
+            return "", "Trace file was not written — browser may have crashed during replay."
     except Exception as e:
         log.warning(f"Trace replay exception: {e}")
-
-    return ""
+        return "", f"Trace replay failed: {e}"
 
 
 # ── Codegen recording state ───────────────────────────────────────────────────
@@ -348,7 +361,7 @@ def record_start():
     from playwright._impl._driver import compute_driver_executable
     node, cli = compute_driver_executable()
     _recording_process = subprocess.Popen(
-        [str(node), str(cli), "codegen", "--output", _recording_output_file, APP_URL],
+        [str(node), str(cli), "codegen", "--target", "python", "--output", _recording_output_file, APP_URL],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -386,8 +399,8 @@ def record_finish():
         raise HTTPException(status_code=400, detail="No steps were recorded.")
 
     log.info(f"Recorded code ({len(code)} chars) — replaying for trace")
-    trace_b64 = _replay_with_trace(code)
-    return {"raw_code": code, "trace_b64": trace_b64}
+    trace_b64, trace_error = _replay_with_trace(code)
+    return {"raw_code": code, "trace_b64": trace_b64, "trace_error": trace_error}
 
 
 @app.post("/verify")
@@ -537,84 +550,6 @@ def verify(req: VerifyRequest):
     }
 
 
-@app.post("/run-newman")
-def run_newman():
-    """Run Newman against the bundled SportIQ collection and return failures."""
-    collection = Path(__file__).parent / "SportIQ_API.postman_collection.json"
-    if not collection.exists():
-        raise HTTPException(status_code=404, detail="Postman collection not found.")
-
-    report_file = tempfile.mktemp(suffix=".json")
-    try:
-        result = subprocess.run(
-            ["newman", "run", str(collection),
-             "--reporters", "json",
-             "--reporter-json-export", report_file,
-             "--timeout-request", "30000"],
-            capture_output=True, text=True, timeout=300,
-        )
-        log.info(f"Newman exit code: {result.returncode}")
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Newman not installed. Run: npm install -g newman")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Newman timed out.")
-
-    if not Path(report_file).exists():
-        raise HTTPException(status_code=500, detail=f"Newman produced no report.\n{result.stderr[:500]}")
-
-    with open(report_file) as f:
-        report = json.load(f)
-    Path(report_file).unlink(missing_ok=True)
-
-    executions = report.get("run", {}).get("executions", [])
-    failures = []
-    for ex in executions:
-        assertions = ex.get("assertions") or []
-        failed = [a for a in assertions if a.get("error")]
-        resp = ex.get("response") or {}
-        status_code = resp.get("code", 0)
-        if not failed and status_code < 400:
-            continue
-
-        req = ex.get("request") or {}
-        url_obj = req.get("url") or {}
-        raw_url = url_obj.get("raw", "") if isinstance(url_obj, dict) else str(url_obj)
-        method = req.get("method", "GET")
-        body_obj = req.get("body") or {}
-        req_body = body_obj.get("raw", "") if isinstance(body_obj, dict) else ""
-
-        resp_body = ""
-        stream = resp.get("stream") or {}
-        if stream:
-            try:
-                resp_body = bytes(stream.get("data", [])).decode("utf-8", errors="replace")
-            except Exception:
-                pass
-        if not resp_body:
-            resp_body = resp.get("body", "")
-
-        assertion_msgs = "; ".join(
-            a["error"].get("message", a.get("assertion", "")) for a in failed
-        ) if failed else f"HTTP {status_code}"
-
-        failures.append({
-            "name": ex.get("item", {}).get("name", "Unnamed request"),
-            "method": method,
-            "url": raw_url,
-            "req_body": req_body,
-            "status": str(status_code),
-            "resp_body": resp_body[:500],
-            "assertion_errors": assertion_msgs,
-        })
-
-    stats = report.get("run", {}).get("stats", {})
-    return {
-        "failures": failures,
-        "total_requests": stats.get("requests", {}).get("total", 0),
-        "total_assertions": stats.get("assertions", {}).get("total", 0),
-        "failed_assertions": stats.get("assertions", {}).get("failed", 0),
-    }
-
 
 @app.post("/element-screenshot")
 def element_screenshot(req: ElementScreenshotRequest):
@@ -701,24 +636,14 @@ def _ensure_playwright_installed():
 
 
 if __name__ == "__main__":
-    import socket
     import uvicorn
 
     _ensure_playwright_installed()
 
-    try:
-        local_ip = socket.gethostbyname(socket.gethostname())
-    except Exception:
-        local_ip = "localhost"
-
     print("\n" + "=" * 52)
     print("  SportIQ Verify Agent — ready")
     print("=" * 52)
-    print(f"  Local:    http://localhost:8502")
-    print(f"  Network:  http://{local_ip}:8502")
-    print()
-    print("  Paste one of these URLs into the")
-    print("  SportIQ Bug Dashboard to enable recording.")
+    print(f"  Running at: http://localhost:8502")
     print("=" * 52 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8502)

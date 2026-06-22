@@ -121,9 +121,9 @@ def _push_to_jira(bug: dict, traces: list[dict]):
             "issuetype": {"name": "Bug"},
             "priority":  {"name": priority_map.get(bug["severity"], "Medium")},
             "labels":    [
-                (bug["affected_feature"] or "unknown").replace(" ", "_"),
-                "automated-bug-agent",
-                "ci-failure",
+                "ui-bug",
+                (bug["affected_feature"] or "unknown").lower().replace(" ", "-"),
+                "bug-agent",
             ],
         }
     }

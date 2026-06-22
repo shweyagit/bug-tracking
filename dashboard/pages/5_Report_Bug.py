@@ -233,7 +233,7 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
             "description": {"type": "doc", "version": 1, "content": content},
             "issuetype": {"name": "Bug"},
             "priority": {"name": priority_map.get(bug["priority"], "Medium")},
-            "labels": [l.replace(" ", "-") for l in bug.get("labels", [])] + ["bug-agent"],
+            "labels": list(dict.fromkeys([l.replace(" ", "-") for l in bug.get("labels", [])] + ["bug-agent"])),
         }
     }
 
@@ -265,7 +265,7 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
                 )
                 r.raise_for_status()
             except Exception as exc:
-                st.warning(f"Could not attach {name}: {exc}")
+                st.error(f"Failed to attach {name} to {ticket_key}: {exc}")
 
         for f in (attachments or []):
             with st.spinner(f"Attaching {f.name}..."):
@@ -362,7 +362,8 @@ Respond with a JSON array of step strings:
             }]
             st.success(f"Recorded {len(steps)} steps + Playwright trace captured — will attach to Jira automatically.")
         else:
-            st.success(f"Recorded {len(steps)} steps — trace unavailable.")
+            trace_error = data.get("trace_error") or "Unknown error during trace replay."
+            st.warning(f"Recorded {len(steps)} steps but trace could not be captured: {trace_error}")
     except Exception as e:
         st.error(f"Failed to finish recording: {e}")
 
@@ -377,8 +378,9 @@ tab_ui, tab_api = st.tabs(["UI Bug", "API Bug"])
 with tab_ui:
     with st.expander("Record reproduction steps on your app (recommended)", expanded=False):
         st.markdown(
-            "Opens a browser on your machine via Playwright. Reproduce the bug, "
-            "close the browser, and the steps will be auto-populated in the form."
+            "**1.** Click **Record Steps** — a browser will open on your machine.\n\n"
+            "**2.** Reproduce the bug in the browser, then close it.\n\n"
+            "**3.** Click **Finish Recording** — steps will be auto-populated in the form below."
         )
         st.info(
             "A **Playwright trace** (screenshots at every action + full network log) "
@@ -628,7 +630,7 @@ Respond ONLY with valid JSON:
   "expected_behaviour": "what should happen",
   "actual_behaviour": "what actually happens",
   "priority": "critical|high|medium|low",
-  "labels": ["label1", "label2"],
+  "labels": ["ui-bug", "feature-name-kebab"],
   "affected_feature": "the feature/module affected"
 }}
 
@@ -638,7 +640,7 @@ Rules:
 - NEVER use passive steps like "observe", "notice", "see", "check"
 - Include the step that TRIGGERS the bug
 - priority: critical=data loss/crash, high=major feature broken, medium=degraded UX, low=cosmetic
-- labels: kebab-case, max 3"""
+- labels: exactly 2 labels only — ["ui-bug", "<feature>"] where <feature> is the product feature name in kebab-case (e.g. "dual-analyst", "head-to-head", "player-profile", "search"). NEVER invent descriptive labels like "typography" or "ui-alignment". Only the feature name."""
 
             message = client.messages.create(
                 model="claude-sonnet-4-6",
@@ -712,14 +714,14 @@ Respond ONLY with valid JSON:
   "expected_behaviour": "Expected HTTP status and response format",
   "actual_behaviour": "Actual HTTP status and exact error returned",
   "priority": "critical|high|medium|low",
-  "labels": ["api", "environment-kebab-case", "optional-third"],
+  "labels": ["api-bug", "feature-name-kebab"],
   "affected_feature": "API endpoint or service name"
 }}
 
 Rules:
 - Title MUST follow: "METHOD /path returns STATUS"
 - steps_to_reproduce must be curl commands with exact headers and body
-- labels must include "api" and environment in kebab-case
+- labels: exactly 2 labels only — ["api-bug", "<feature>"] where <feature> is the product feature name in kebab-case (e.g. "dual-analyst", "head-to-head", "player-profile", "search"). NEVER invent descriptive labels. Only the feature name.
 - If Production, default priority to high or critical
 - actual_behaviour must quote exact error from response body
 - priority: critical=production down/data loss, high=production degraded, medium=non-prod, low=cosmetic"""
