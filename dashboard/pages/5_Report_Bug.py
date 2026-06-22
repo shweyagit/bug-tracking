@@ -188,9 +188,8 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
     if has_trace:
         content += [
             _h("Playwright Trace"),
-            _p("A Playwright trace is attached to this ticket (playwright_trace.zip).\n"
-               "To replay the bug: download the zip, go to https://trace.playwright.dev and open the file.\n"
-               "You will see every action, screenshot, network request, and console log from the session."),
+            _p("PFA traces.\n"
+               "To view the trace, open playwright_trace.zip attached to this ticket at https://trace.playwright.dev"),
         ]
 
     api_details = st.session_state.get("api_details")
