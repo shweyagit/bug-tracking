@@ -15,7 +15,7 @@ An enterprise-grade bug intelligence platform that connects GitHub Actions CI pi
 ![Report a Bug](docs/report-bug.png)
 
 > **Watch the full workflow:** [demo.mp4](docs/demo.mp4)
-> 
+>
 **Live Jira Bug Tracker — color-coded by priority, synced live**
 
 ![Jira Tracker](docs/jira-tracker.png)
@@ -33,13 +33,20 @@ When a GitHub Actions workflow fails, the agent automatically:
 - Creates a draft bug ticket in the dashboard for engineer review
 - One click to push the fully-formed ticket to Jira — with stack traces, affected feature, severity, and labels
 
-### Manual Bug Reporting
-Any team member can report a bug in plain English:
+### Manual Bug Reporting — UI Bugs
+Any team member can report a UI bug in plain English:
 - Claude AI converts the description into a structured, professional Jira ticket
 - Attach screenshots, screen recordings, or zip bundles
-- **Verify Bug on App** — a headless Playwright browser follows the reproduction steps on the real app, screenshots every step, and Claude vision confirms whether the bug is reproducible
-- Console errors are captured automatically
-- Everything (report + screenshots + console errors) is attached to the Jira ticket in one push
+- **Record reproduction steps** — a Playwright browser opens on your machine, records every click and navigation, then replays them headlessly to capture a full Playwright trace (screenshots at every action + network logs + console errors)
+- The trace attaches to the Jira ticket automatically — open it at [trace.playwright.dev](https://trace.playwright.dev) to replay the bug step by step
+
+### Manual Bug Reporting — API Bugs
+A built-in Postman-style request builder lets you fire live API calls and capture evidence directly:
+- Select **Environment** (Production / Staging / Development / Local) — base URL auto-fills from env vars
+- Choose **method**, enter the **full URL**, add or remove **headers**, write the **request body**
+- Click **Send** — the response (status, body, headers, latency) is captured in the dashboard
+- Describe what's wrong, click **Draft Bug Ticket** — Claude gets the full request + response + headers and writes a developer-ready ticket with curl-reproducible steps
+- Push to Jira with all evidence included
 
 ### Live Jira Bug Tracker
 - Pulls all bugs live from Jira — no manual sync
@@ -82,8 +89,8 @@ Background Worker
         ▼
 Streamlit Dashboard
   ├── Review & push CI bug drafts to Jira
-  ├── Manual bug reporting (plain English → AI → Jira)
-  ├── Playwright bug verification on real app
+  ├── UI bug reporting — plain English + Playwright recording → AI → Jira
+  ├── API bug reporting — live request builder → AI → Jira
   ├── Live Jira tracker
   ├── Feature health & failure trends
   └── Release tracking by Jira label
@@ -101,6 +108,7 @@ Streamlit Dashboard
 | Database | PostgreSQL |
 | Queue | Redis + ARQ |
 | Browser Automation | Playwright (Chromium) |
+| HTTP Client | httpx |
 | Deployment | Docker Compose |
 | Integrations | GitHub Actions, Jira REST API v3 |
 
@@ -115,11 +123,33 @@ Streamlit Dashboard
 | **Bug Tickets** | Review AI-drafted CI bugs, push to Jira with full stack traces |
 | **Feature Health** | Failure rates per feature, flaky test ranking, 30-day trend |
 | **Release Bugs** | Enter a version label → see all Jira bugs for that release, open vs fixed |
-| **Report a Bug** | Plain English → AI → Jira ticket, with Playwright verification |
+| **Report a Bug** | UI bug with Playwright recording or API bug with live request builder → AI → Jira |
 | **Jira Tracker** | Live bug board pulled from Jira, colour-coded by priority |
+
+> **User Manual** and **About This App** are accessible via popup buttons in the top-right corner of every page.
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `PROD_BASE_URL` | Base URL for Production API (default: `https://api.sportiq.com`) |
+| `STAGING_BASE_URL` | Base URL for Staging API |
+| `DEV_BASE_URL` | Base URL for Development API |
+| `LOCAL_BASE_URL` | Base URL for Local API (default: `http://localhost:3000`) |
+| `ANTHROPIC_API_KEY` | Claude AI API key |
+| `JIRA_BASE_URL` | Your Jira workspace URL |
+| `JIRA_EMAIL` | Jira account email |
+| `JIRA_API_TOKEN` | Jira API token |
+| `JIRA_PROJECT_KEY` | Jira project key (default: `SCRUM`) |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `VERIFY_SERVICE_URL` | Local verify agent URL (default: `http://host.docker.internal:8502`) |
+
+See `.env.example` for the full configuration required to run your own instance.
 
 ---
 
 ## Note
 
-This project runs against a private Jira workspace, GitHub repo, and locally hosted app — credentials are not included. See `.env.example` for the configuration required to run your own instance.
+This project runs against a private Jira workspace, GitHub repo, and locally hosted app — credentials are not included.
