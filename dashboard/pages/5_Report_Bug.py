@@ -15,7 +15,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils import ICON, page_setup
+from utils import ICON, page_setup, get_verify_url
 
 st.set_page_config(page_title="Report a Bug", page_icon=ICON, layout="wide")
 page_setup()
@@ -40,7 +40,7 @@ def _verify_bug_on_app(bug: dict):
         st.warning("No steps to reproduce found. Generate the bug report first.")
         return
 
-    verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+    verify_url = get_verify_url()
 
     with st.spinner("Opening browser on your machine and reproducing the bug... this may take a minute."):
         try:
@@ -289,7 +289,7 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
 
 # ── Record Steps via Playwright Codegen ───────────────────────────────────────
 def _record_steps():
-    verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+    verify_url = get_verify_url()
     try:
         resp = httpx.post(f"{verify_url}/record/start", timeout=10)
         resp.raise_for_status()
@@ -300,7 +300,7 @@ def _record_steps():
 
 
 def _finish_recording():
-    verify_url = os.getenv("VERIFY_SERVICE_URL", "http://host.docker.internal:8502")
+    verify_url = get_verify_url()
     try:
         status = httpx.get(f"{verify_url}/record/status", timeout=5).json()
         if status.get("status") == "recording":

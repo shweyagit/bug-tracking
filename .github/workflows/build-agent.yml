@@ -1,0 +1,67 @@
+name: Build Verify Agent
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            exe_name: verify_agent_mac
+          - os: windows-latest
+            exe_name: verify_agent_windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyinstaller fastapi "uvicorn[standard]" pydantic python-dotenv anthropic playwright httpx
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --onefile \
+            --name verify_agent_mac \
+            --hidden-import uvicorn.logging \
+            --hidden-import uvicorn.loops.auto \
+            --hidden-import uvicorn.protocols.http.auto \
+            --hidden-import uvicorn.protocols.websockets.auto \
+            --hidden-import uvicorn.lifespan.on \
+            --hidden-import anyio._backends._asyncio \
+            --hidden-import playwright.sync_api \
+            --hidden-import playwright._impl._driver \
+            verify_service.py
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --onefile `
+            --name verify_agent_windows `
+            --hidden-import uvicorn.logging `
+            --hidden-import uvicorn.loops.auto `
+            --hidden-import uvicorn.protocols.http.auto `
+            --hidden-import uvicorn.protocols.websockets.auto `
+            --hidden-import uvicorn.lifespan.on `
+            --hidden-import anyio._backends._asyncio `
+            --hidden-import playwright.sync_api `
+            --hidden-import playwright._impl._driver `
+            verify_service.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.exe_name }}
+          path: dist/${{ matrix.exe_name }}*
+          retention-days: 30

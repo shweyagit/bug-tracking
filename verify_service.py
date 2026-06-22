@@ -276,18 +276,17 @@ def _observe(page, step: str, action_desc: str, network_logs: list[dict], consol
 def _replay_with_trace(code: str) -> str:
     """
     Extract page.* action lines from the codegen script and replay them
-    in a fresh Playwright session with tracing. Uses try/finally so the
-    trace is always saved even if a step fails mid-way.
+    in a fresh Playwright session with tracing. Runs in-process so it works
+    inside a PyInstaller executable (no python3 subprocess needed).
     """
     if not code.strip():
         return ""
 
-    # Pull out every page.* action line (preserving original selectors/values)
     page_actions = []
     for line in code.split("\n"):
         stripped = line.strip()
         if stripped.startswith("page.") and not stripped.startswith("page.wait_for_timeout"):
-            page_actions.append(f"        {stripped}")
+            page_actions.append(stripped)
 
     if not page_actions:
         log.warning("No page.* actions found in codegen output")
@@ -295,45 +294,25 @@ def _replay_with_trace(code: str) -> str:
 
     trace_path = tempfile.mktemp(suffix=".zip")
 
-    # Build a clean script: our own Playwright session + tracing + try/finally
-    action_block = "\n".join(
-        f"        try:\n            {a.strip()}\n        except Exception as _e:\n            print(f'Step skipped: {{_e}}')"
-        for a in page_actions
-    )
-
-    script = f"""
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    context = browser.new_context(viewport={{"width": 1280, "height": 800}})
-    context.tracing.start(screenshots=True, snapshots=True, sources=True)
-    page = context.new_page()
     try:
-{action_block}
-    except Exception as e:
-        print(f"Replay error: {{e}}")
-    finally:
-        context.tracing.stop(path={repr(trace_path)})
-    context.close()
-    browser.close()
-"""
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
-    tmp.write(script)
-    tmp.close()
-
-    try:
-        result = subprocess.run(
-            ["python3", tmp.name],
-            timeout=180,
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout:
-            log.info(f"Trace replay output: {result.stdout[:300]}")
-        if result.returncode != 0:
-            log.warning(f"Trace replay stderr: {result.stderr[:300]}")
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+            page = context.new_page()
+            try:
+                for action_line in page_actions:
+                    try:
+                        exec(action_line, {"page": page})  # noqa: S102
+                    except Exception as _e:
+                        log.info(f"Step skipped: {_e}")
+            except Exception as e:
+                log.warning(f"Replay error: {e}")
+            finally:
+                context.tracing.stop(path=trace_path)
+            context.close()
+            browser.close()
 
         if Path(trace_path).exists():
             data = base64.b64encode(Path(trace_path).read_bytes()).decode()
@@ -344,8 +323,6 @@ with sync_playwright() as p:
             log.warning("Trace file not found after replay")
     except Exception as e:
         log.warning(f"Trace replay exception: {e}")
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
 
     return ""
 
@@ -368,9 +345,10 @@ def record_start():
     tmp.close()
 
     log.info(f"Starting codegen → {_recording_output_file}")
+    from playwright._impl._driver import compute_driver_executable
+    driver = str(compute_driver_executable())
     _recording_process = subprocess.Popen(
-        ["python3", "-m", "playwright", "codegen",
-         "--output", _recording_output_file, APP_URL],
+        [driver, "codegen", "--output", _recording_output_file, APP_URL],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -738,6 +716,43 @@ def health():
     return {"status": "ok", "app_url": APP_URL}
 
 
+def _ensure_playwright_installed():
+    """Install Playwright Chromium on first run (needed after exe download)."""
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver = str(compute_driver_executable())
+        log.info("Checking Playwright Chromium installation...")
+        result = subprocess.run(
+            [driver, "install", "chromium"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0:
+            log.info("Playwright Chromium ready.")
+        else:
+            log.warning(f"playwright install output: {result.stderr[:300]}")
+    except Exception as e:
+        log.warning(f"Could not auto-install Playwright Chromium: {e}")
+
+
 if __name__ == "__main__":
+    import socket
     import uvicorn
+
+    _ensure_playwright_installed()
+
+    try:
+        local_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        local_ip = "localhost"
+
+    print("\n" + "=" * 52)
+    print("  SportIQ Verify Agent — ready")
+    print("=" * 52)
+    print(f"  Local:    http://localhost:8502")
+    print(f"  Network:  http://{local_ip}:8502")
+    print()
+    print("  Paste one of these URLs into the")
+    print("  SportIQ Bug Dashboard to enable recording.")
+    print("=" * 52 + "\n")
+
     uvicorn.run(app, host="0.0.0.0", port=8502)
