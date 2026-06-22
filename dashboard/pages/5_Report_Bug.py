@@ -168,6 +168,8 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
 
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(bug.get("steps_to_reproduce", [])))
 
+    has_trace = any(sc["name"] == "playwright_trace.zip" for sc in st.session_state.get("auto_screenshots", []))
+
     content = [
         _h("Description"),
         _p(bug["description"]),
@@ -182,6 +184,14 @@ def _push_manual_bug_to_jira(bug: dict, attachments: list):
         _h("Filed By"),
         _p(f"{reporter_name} · via Bug Tracking Agent"),
     ]
+
+    if has_trace:
+        content += [
+            _h("Playwright Trace"),
+            _p("A Playwright trace is attached to this ticket (playwright_trace.zip).\n"
+               "To replay the bug: download the zip, go to https://trace.playwright.dev and open the file.\n"
+               "You will see every action, screenshot, network request, and console log from the session."),
+        ]
 
     api_details = st.session_state.get("api_details")
     if api_details:
