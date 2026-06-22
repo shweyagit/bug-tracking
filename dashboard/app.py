@@ -2,14 +2,14 @@ import streamlit as st
 from utils import ICON, page_setup
 
 st.set_page_config(
-    page_title="Bug Tracking Agent",
+    page_title="SportIQ Bug Dashboard",
     page_icon=ICON,
     layout="wide",
     initial_sidebar_state="expanded",
 )
 page_setup()
 
-st.title("Bug Tracking Agent")
+st.title("SportIQ Bug Dashboard")
 st.markdown(
     """
     Enterprise bug intelligence powered by GitHub Actions, TestRail, Jira, and Claude AI.
