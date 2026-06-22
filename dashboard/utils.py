@@ -46,31 +46,7 @@ def page_setup():
     /* Hide three-dot toolbar menu */
     [data-testid="stToolbar"],
     #MainMenu { visibility: hidden !important; display: none !important; }
-    /* Top-right button bar */
-    .topright-bar {
-        position: fixed;
-        top: 14px;
-        right: 20px;
-        z-index: 1000;
-        display: flex;
-        gap: 8px;
-    }
-    .topright-bar a {
-        text-decoration: none;
-        padding: 6px 14px;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 600;
-        background: rgba(255,255,255,0.08);
-        border: 1px solid rgba(255,255,255,0.18);
-        color: inherit;
-        transition: background 0.15s;
-    }
-    .topright-bar a:hover { background: rgba(255,255,255,0.18); }
     </style>
-    <div class="topright-bar">
-        <a href="/_User_Manual" target="_self">&#128196; User Manual</a>
-    </div>
     """, unsafe_allow_html=True)
 
     with st.sidebar:
@@ -96,11 +72,63 @@ def page_setup():
     with col_btn:
         with st.popover("About Me", use_container_width=True):
             st.markdown("""
-**SportIQ Bug Tracker**
+**About This App**
+
+**SportIQ Bug Tracker** is an AI-powered bug tracking agent built for the SportIQ platform.
+
+It automatically detects, analyses, and files bug reports by connecting:
+- **GitHub Actions** — captures CI test failures in real time
+- **TestRail** — syncs test results and run history
+- **Jira** — creates and tracks bug tickets automatically
+- **Claude AI** — analyses failures, writes reproduction steps, and prioritises bugs
+
+You can also manually report UI bugs (with Playwright browser recording) or API bugs (with Newman test runs), and Claude will draft the full Jira ticket for you.
 
 Built by **Shweta Pandey**
-
-An AI-powered bug tracking agent that integrates GitHub Actions, TestRail, Jira, and Claude AI to automate bug detection, reporting, and triage.
-
-- GitHub: [@shwetapandey](https://github.com/shwetapandey)
             """)
+
+            with st.expander("User Manual"):
+                st.markdown("""
+#### Getting Started
+Start the full stack with:
+```bash
+./start.sh
+```
+This starts the dashboard at **http://localhost:8501**, the local verify agent on port 8502, and an ngrok tunnel.
+Check the sidebar — **Local Agent** should show 🟢 connected.
+
+---
+
+#### Reporting a UI Bug
+1. Go to **Report Bug → UI Bug tab**
+2. Click **Record Steps** — a browser opens, reproduce the bug, then close it
+3. Click **Finish Recording** — the agent converts your actions into steps and captures a Playwright trace
+4. Describe the bug, add attachments, then click **Draft Bug Ticket**
+5. Review the AI-generated draft and click **Push to Jira**
+
+---
+
+#### Reporting an API Bug
+**Option A — Manual:** Go to **Report Bug → API Bug tab**, fill in the endpoint, request/response details, and click **Draft Bug Ticket**.
+
+**Option B — Newman (recommended):** Click **Run API Tests** — the agent runs the full test suite, any failure appears as a card. Click **Draft** to auto-fill the form.
+
+---
+
+#### Dashboard Pages
+| Page | Description |
+|------|-------------|
+| Test Failures | CI failures from GitHub Actions with AI analysis |
+| Bug Tickets | Draft and open bug tickets |
+| Feature Health | Which features fail most frequently |
+| Release Bugs | Bugs open at each release gate |
+| Report Bug | File a UI or API bug manually |
+| Jira Tracker | Browse bugs on your Jira board |
+
+---
+
+#### Tips
+- Download `playwright_trace.zip` from Jira and open it at [trace.playwright.dev](https://trace.playwright.dev) to replay every click
+- Record only the steps needed to trigger the bug
+- If environment is Production, set priority to High or Critical
+                """)
