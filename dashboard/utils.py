@@ -91,19 +91,7 @@ Built by **Shweta Pandey**
             st.markdown("#### Getting Started")
             # st.video("docs/videos/getting-started.mp4")
             st.caption("_📹 Demo video coming soon_")
-            st.markdown("""
-The dashboard is live at:
-**[https://opisthognathous-amee-digitally.ngrok-free.dev](https://opisthognathous-amee-digitally.ngrok-free.dev)**
-
-To run it locally, start the full stack from the project root:
-```bash
-./start.sh
-```
-This starts the dashboard, the local verify agent on **port 8502**, and the ngrok tunnel.
-
-Check the sidebar — **Local Agent** should show 🟢 connected.
-If it shows 🔴 offline, run `python verify_service.py` manually in a terminal.
-            """)
+            st.markdown("Check the sidebar — **Local Agent** should show 🟢 connected.")
 
             st.markdown("#### Reporting a UI Bug")
             # st.video("docs/videos/ui-bug.mp4")
