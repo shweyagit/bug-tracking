@@ -46,9 +46,6 @@ def page_setup():
     /* Hide three-dot toolbar menu */
     [data-testid="stToolbar"],
     #MainMenu { visibility: hidden !important; display: none !important; }
-    /* Hide User Manual from sidebar nav */
-    [data-testid="stSidebarNav"] li:has(a[href*="User_Manual"]),
-    [data-testid="stSidebarNav"] a[href*="User_Manual"] { display: none !important; }
     /* Top-right button bar */
     .topright-bar {
         position: fixed;
@@ -72,7 +69,7 @@ def page_setup():
     .topright-bar a:hover { background: rgba(255,255,255,0.18); }
     </style>
     <div class="topright-bar">
-        <a href="/7_User_Manual" target="_self">&#128196; User Manual</a>
+        <a href="/_User_Manual" target="_self">&#128196; User Manual</a>
     </div>
     """, unsafe_allow_html=True)
 
