@@ -43,7 +43,37 @@ def page_setup():
     [data-testid="collapsedControl"],
     button[aria-label="Close sidebar"],
     section[data-testid="stSidebar"] > div:first-child > button { display: none !important; }
+    /* Hide three-dot toolbar menu */
+    [data-testid="stToolbar"],
+    #MainMenu { visibility: hidden !important; display: none !important; }
+    /* Hide User Manual from sidebar nav */
+    [data-testid="stSidebarNav"] li:has(a[href*="User_Manual"]),
+    [data-testid="stSidebarNav"] a[href*="User_Manual"] { display: none !important; }
+    /* Top-right button bar */
+    .topright-bar {
+        position: fixed;
+        top: 14px;
+        right: 20px;
+        z-index: 1000;
+        display: flex;
+        gap: 8px;
+    }
+    .topright-bar a {
+        text-decoration: none;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.18);
+        color: inherit;
+        transition: background 0.15s;
+    }
+    .topright-bar a:hover { background: rgba(255,255,255,0.18); }
     </style>
+    <div class="topright-bar">
+        <a href="/7_User_Manual" target="_self">&#128196; User Manual</a>
+    </div>
     """, unsafe_allow_html=True)
 
     with st.sidebar:
@@ -63,3 +93,17 @@ def page_setup():
         else:
             st.markdown("🔴 **Local Agent** offline")
             st.caption("Run `python verify_service.py` to enable recording.")
+
+    # About Me popover — top-right, rendered after sidebar
+    col_spacer, col_btn = st.columns([0.85, 0.15])
+    with col_btn:
+        with st.popover("About Me", use_container_width=True):
+            st.markdown("""
+**SportIQ Bug Tracker**
+
+Built by **Shweta Pandey**
+
+An AI-powered bug tracking agent that integrates GitHub Actions, TestRail, Jira, and Claude AI to automate bug detection, reporting, and triage.
+
+- GitHub: [@shwetapandey](https://github.com/shwetapandey)
+            """)
