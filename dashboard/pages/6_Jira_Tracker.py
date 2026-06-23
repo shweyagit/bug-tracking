@@ -5,7 +5,6 @@ import os
 import sys
 from base64 import b64encode
 import httpx
-import plotly.express as px
 import streamlit as st
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
@@ -146,41 +145,6 @@ for col, (label, val, color, bg) in zip(cols, metrics):
         unsafe_allow_html=True,
     )
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
-# ── Status bar chart ──────────────────────────────────────────────────────────
-status_counts: dict[str, int] = {}
-for issue in issues:
-    s = (issue["fields"].get("status") or {}).get("name", "Unknown")
-    status_counts[s] = status_counts.get(s, 0) + 1
-
-status_color_map = {
-    "To Do":       "#57606a",
-    "In Progress": "#0969da",
-    "Done":        "#1a7f37",
-    "Blocked":     "#cf222e",
-    "In Review":   "#8250df",
-}
-chart_data = {
-    "Status": list(status_counts.keys()),
-    "Count":  list(status_counts.values()),
-    "Color":  [status_color_map.get(s, "#57606a") for s in status_counts.keys()],
-}
-fig = px.bar(
-    chart_data, x="Status", y="Count", color="Status",
-    color_discrete_map={s: status_color_map.get(s, "#57606a") for s in status_counts},
-    text="Count",
-)
-fig.update_traces(textposition="outside")
-fig.update_layout(
-    showlegend=False,
-    plot_bgcolor="white",
-    paper_bgcolor="white",
-    margin=dict(t=10, b=10, l=0, r=0),
-    height=220,
-    xaxis=dict(title="", tickfont=dict(size=12)),
-    yaxis=dict(title="", showgrid=True, gridcolor="#f0f0f0"),
-)
-st.plotly_chart(fig, use_container_width=True)
 
 # ── Priority filter tabs ───────────────────────────────────────────────────────
 pf_options = ["All"] + [f"{PRIORITY[k]['dot']} {PRIORITY[k]['label']}"
